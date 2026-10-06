@@ -5,6 +5,9 @@
 node_modules
 dist
 *.log
+.next
+data
+tsconfig.tsbuildinfo
 .env
 .env.*
 .envrc
