@@ -1,6 +1,6 @@
 {
-  // Covers the supplied harness (spec/, scripts/); widen `include` if your app
-  // is TypeScript and you want `pnpm typecheck` to cover it too.
+  // Covers the supplied harness (spec/, scripts/) and the app itself
+  // (app/, lib/).
   "compilerOptions": {
     "target": "ES2023",
     "module": "ESNext",
@@ -8,13 +8,40 @@
     // Imports name the file they mean, extension and all --- which is what
     // node itself wants when it runs a .ts file directly.
     "allowImportingTsExtensions": true,
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": ["node"],
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
     "moduleDetection": "force",
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "allowJs": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true
   },
-  "include": ["*.ts", "spec", "scripts"]
+  "include": [
+    "*.ts",
+    "app",
+    "lib",
+    "next-env.d.ts",
+    "scripts",
+    "spec",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
 }
