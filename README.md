@@ -11,26 +11,9 @@ one question fast — *is it raining near me, or about to* — without an accoun
 a feed, or a settings page to get through first.
 
 A good version of this app:
+ - Answers "is it raining near me, or about to" in one glance — no login, no setup, no settings page first.
+ - Works for a stranger with nothing but a browser: grant location (or search for one), and radar, warnings and a short forecast show up for that place.
+ - Remembers where you last looked, so coming back doesn't mean starting over.
+ - Doesn't pretend to be more than it is yet — a dashboard of pinned favourites behind a login is planned, not built. This version is deliberately just the core loop, working, for one person at a time.
 
-- **gets out of the way on load.** It should already show your own location's
-  radar and any live warnings before you've touched anything. If you denied
-  location once, it shouldn't ask again and again — it should just show you
-  where you were last time.
-- **treats warnings as the most important thing on the page**, not something
-  buried under a forecast. A severe weather warning should be impossible to
-  miss.
-- **doesn't pretend to be more certain than BOM's own data is.** If the radar
-  image, forecast or warnings can't be fetched, the app says so plainly rather
-  than showing stale or fake data.
-- **is honest about scope.** This first version only shows the nearest major
-  radar station to a location, not a hyper-local composite; it's a rough
-  proof that the core idea works, not a finished product.
-
-What I read while deciding this: the final project brief's notes on "good"
-(the small web, games for a handful of friends, tools built for one
-workshop), and BOM's own site, which I used as the baseline for what
-"warnings first" and "radar near me" should look like, while deliberately not
-trying to match its scope.
-
-This is a first pass and it's expected to change as the app grows — logins,
-a pinned dashboard of favourite locations, and a proper radar loop are next.
+Currently the Bearau of meteorology website spent approximately $96.5 million on their website redevelopment. However, the services the website provides are subpar at best. A good version of this app aim's to provide user friendly BOM services across four areas. I will do this by creating a user first version of the BOM Rain radar and weather maps, current warnings and forecast. That means that the users would want to go to the site to check weather conditions and forecast of a location. They could search by location but the app should onload display their current location. In terms of the multiplayer sync, i think users should be able to login to customise their dashboard of what they want to pin.
