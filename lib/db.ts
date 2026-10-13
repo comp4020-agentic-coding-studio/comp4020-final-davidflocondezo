@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -49,4 +50,57 @@ export function saveTrace(visitorId: string, trace: Trace): void {
        lon = excluded.lon,
        updated_at = excluded.updated_at`,
   ).run({ visitorId, ...trace, updatedAt: new Date().toISOString() });
+}
+
+// Community reports: unverified, user-dropped pins ("raining here right
+// now"). Kept in the same SQLite volume as `visits` so a reconnecting viewer
+// sees recent reports rather than starting from a blank map (see PROCESS.md,
+// crit 9 decision). Expiry is enforced here so a stale report can never leak
+// out of `listActiveReports`, even if a client's own fade logic is wrong or
+// skipped.
+export const REPORT_LIFETIME_MS = 2 * 60 * 60 * 1000;
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS reports (
+    id TEXT PRIMARY KEY,
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    geohash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )
+`);
+
+export interface Report {
+  id: string;
+  lat: number;
+  lon: number;
+  geohash: string;
+  createdAt: string;
+}
+
+export function createReport(lat: number, lon: number, geohash: string): Report {
+  const report: Report = {
+    id: randomUUID(),
+    lat,
+    lon,
+    geohash,
+    createdAt: new Date().toISOString(),
+  };
+  db.prepare(
+    `INSERT INTO reports (id, lat, lon, geohash, created_at)
+     VALUES (@id, @lat, @lon, @geohash, @createdAt)`,
+  ).run(report);
+  return report;
+}
+
+export function listActiveReports(): Report[] {
+  const cutoff = new Date(Date.now() - REPORT_LIFETIME_MS).toISOString();
+  return db
+    .prepare(
+      `SELECT id, lat, lon, geohash, created_at AS createdAt
+       FROM reports
+       WHERE created_at > ?
+       ORDER BY created_at DESC`,
+    )
+    .all(cutoff) as Report[];
 }

@@ -75,6 +75,64 @@ by the Bureau of Meteorology. You must not use, copy or share it."` This is a
 reverse-engineered API, not a published one with its own terms — that notice
 is worth weighing before this app is relied on past a classroom proof-of-life.
 
+## Crit 9: choosing the concurrency feature
+
+Before settling on tap-to-drop community report pins, I considered two other
+shapes for "what happens when several people use this at once":
+
+- **Shared prep tasks** — checklist items like "secure outdoor items" or "fuel
+  the car," surfaced off the back of active weather warnings, that sync
+  instantly when anyone ticks one off, so a household or street sees the same
+  checklist state live.
+- **Confirm conditions inside a warning** — when BOM has an active warning
+  (e.g. a flash flood warning), people in that area can confirm what they're
+  actually seeing ("flash flooding on Main St"), rendered as a community layer
+  underneath the official warning rather than standing alone.
+
+I went with the community report pins instead. Weighed against the other two,
+pins are the most user-friendly entry point — tap the map, no checklist to
+set up and no warning needing to already be active first — and they're the
+one that asks the least of a new user while still giving something back to
+everyone else looking at the same place. The shared-tasks idea only has
+something to sync once someone has warnings and a household already set up;
+the warning-confirmation idea only works inside an active warning area, so it
+has nothing to show on an ordinary day. Pins work from the very first tap, by
+anyone, anywhere — which is also what makes them the shape most likely to
+actually build up a base of contributors, since there's no bar to clear
+before the first person's pin is useful to the second.
+
+## Crit 9: real-time community reports
+
+The feature built this week — tap the map to drop a "community report" pin
+that appears live for everyone viewing roughly the same area, persists across
+reloads, and fades out after two hours — is this crit's answer to both of
+its spec lines at once: it's the real-time mechanism, and the choices inside
+how it works are the one documented concurrency decision the spec asks for.
+
+Full reasoning, alternatives considered and costs are in
+[`docs/decisions/0001-community-reports-concurrency.md`](docs/decisions/0001-community-reports-concurrency.md).
+Short version: Server-Sent Events over an in-process `EventEmitter`
+(`lib/reportsBus.ts`), not WebSockets (would need a custom server, losing the
+standalone build) or polling (too chatty for the 256MB/one-machine budget).
+Reports persist to the same SQLite volume as `visits`
+(`lib/db.ts`) rather than living only in memory, because the one Fly machine
+stops and restarts on inactivity (`fly.toml`'s `auto_stop_machines`) — an
+in-memory board would be wiped far more often than the two-hour lifetime
+reports are meant to have. The EventEmitter fan-out only works *because*
+`fly.toml` fixes one machine; it would silently stop being real-time under
+horizontal scaling, which is the main cost worth re-checking if that ever
+changes.
+
+Report pins are visually distinct from anything an official BOM warning
+would use (amber circle, not red/triangle) and always carry an explicit
+"Community report — not verified" label, so a stranger glancing at the map
+can't mistake one for an authoritative alert.
+
+**Deliberately not handled this crit:** no auth, no rate-limiting, no
+de-duplication, no way to retract a mistaken tap. Sits alongside the
+login/pinned-dashboard scope note from crit 8 as a known gap, not an
+oversight.
+
 ## How I directed, grounded and corrected the work
 
 [To be filled in with commit links as the build progresses — markers follow
