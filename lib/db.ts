@@ -66,29 +66,49 @@ db.exec(`
     lat REAL NOT NULL,
     lon REAL NOT NULL,
     geohash TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
   )
 `);
+// The live Fly volume already has a `reports` table from before this column
+// existed; add it for that case (CREATE TABLE IF NOT EXISTS above is a no-op
+// there). Harmless to repeat once it exists.
+try {
+  db.exec(`ALTER TABLE reports ADD COLUMN description TEXT NOT NULL DEFAULT ''`);
+} catch {
+  // column already exists
+}
 
 export interface Report {
   id: string;
   lat: number;
   lon: number;
   geohash: string;
+  description: string;
   createdAt: string;
 }
 
-export function createReport(lat: number, lon: number, geohash: string): Report {
+// A fixed length cap, enforced here (not just client-side), so the stored
+// value can never grow unbounded regardless of what a client sends.
+export const REPORT_DESCRIPTION_MAX_LENGTH = 280;
+
+export function createReport(
+  lat: number,
+  lon: number,
+  geohash: string,
+  description: string,
+): Report {
   const report: Report = {
     id: randomUUID(),
     lat,
     lon,
     geohash,
+    description: description.slice(0, REPORT_DESCRIPTION_MAX_LENGTH),
     createdAt: new Date().toISOString(),
   };
   db.prepare(
-    `INSERT INTO reports (id, lat, lon, geohash, created_at)
-     VALUES (@id, @lat, @lon, @geohash, @createdAt)`,
+    `INSERT INTO reports (id, lat, lon, geohash, description, created_at)
+     VALUES (@id, @lat, @lon, @geohash, @description, @createdAt)`,
   ).run(report);
   return report;
 }
@@ -97,7 +117,7 @@ export function listActiveReports(): Report[] {
   const cutoff = new Date(Date.now() - REPORT_LIFETIME_MS).toISOString();
   return db
     .prepare(
-      `SELECT id, lat, lon, geohash, created_at AS createdAt
+      `SELECT id, lat, lon, geohash, description, created_at AS createdAt
        FROM reports
        WHERE created_at > ?
        ORDER BY created_at DESC`,

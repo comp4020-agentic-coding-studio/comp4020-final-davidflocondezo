@@ -128,6 +128,17 @@ would use (amber circle, not red/triangle) and always carry an explicit
 "Community report — not verified" label, so a stranger glancing at the map
 can't mistake one for an authoritative alert.
 
+**Added after the initial build: a description, and a confirm step before
+creating.** Tapping the map now opens an editable popup (a short text
+description plus a Create button) instead of posting immediately — nothing
+is saved until Create is clicked, so an accidental tap costs nothing and a
+reporter can say what they're actually seeing ("flash flooding on Main St"),
+not just drop an unlabelled dot. The description is capped at 280 characters,
+enforced both in the input and server-side (`lib/db.ts`,
+`REPORT_DESCRIPTION_MAX_LENGTH`), and rendered through a small HTML-escaping
+helper before going into a report's popup, since it's untrusted free text
+from any visitor.
+
 **Deliberately not handled this crit:** no auth, no rate-limiting, no
 de-duplication, no way to retract a mistaken tap. Sits alongside the
 login/pinned-dashboard scope note from crit 8 as a known gap, not an

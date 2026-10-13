@@ -14,6 +14,7 @@ interface Report {
   lat: number;
   lon: number;
   geohash: string;
+  description: string;
   createdAt: string;
 }
 
@@ -21,6 +22,10 @@ interface Report {
 // that so a marker fades out and disappears client-side without needing
 // another round trip to notice it expired.
 const REPORT_LIFETIME_MS = 2 * 60 * 60 * 1000;
+// Matches lib/db.ts REPORT_DESCRIPTION_MAX_LENGTH; the server enforces this
+// independently, this just keeps the input from accepting more than can
+// ever be saved.
+const DESCRIPTION_MAX_LENGTH = 280;
 
 const reportOpacity = (createdAt: string): number => {
   const age = Date.now() - new Date(createdAt).getTime();
@@ -50,8 +55,17 @@ const relativeTime = (iso: string): string => {
   return `${Math.round(minutes / 60)}h ago`;
 };
 
+const escapeHtml = (s: string): string =>
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
 const reportPopupHtml = (report: Report): string =>
-  `<strong>Community report — not verified</strong><br/>reported ${relativeTime(report.createdAt)}`;
+  `<strong>Community report — not verified</strong><br/>` +
+  (report.description ? `${escapeHtml(report.description)}<br/>` : "") +
+  `reported ${relativeTime(report.createdAt)}`;
 
 // Leaflet needs `window`, so this only ever runs client-side (see the
 // dynamic(..., { ssr: false }) import in app/page.tsx).
@@ -97,6 +111,55 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
       }
     };
 
+    // Tapping the map opens an editable popup (description + Create button)
+    // at the tapped point, rather than posting immediately — nothing is
+    // saved until Create is clicked, so an accidental tap costs nothing.
+    const openDraftPopup = (Leaflet: typeof L, map: L.Map, tapLat: number, tapLon: number): void => {
+      const content = document.createElement("div");
+      content.style.minWidth = "200px";
+      content.innerHTML = `
+        <strong>New community report</strong>
+        <textarea
+          rows="2"
+          maxlength="${DESCRIPTION_MAX_LENGTH}"
+          placeholder="What are you seeing? (optional)"
+          style="width: 100%; margin: 6px 0; box-sizing: border-box; resize: vertical;"
+        ></textarea>
+        <div style="color: crimson; font-size: 0.85em; display: none;"></div>
+        <button type="button" style="width: 100%; padding: 4px;">Create</button>
+      `;
+      const textarea = content.querySelector("textarea")!;
+      const errorEl = content.querySelector("div")!;
+      const button = content.querySelector("button")!;
+
+      const popup = Leaflet.popup().setLatLng([tapLat, tapLon]).setContent(content).openOn(map);
+
+      button.addEventListener("click", () => {
+        void (async () => {
+          button.disabled = true;
+          errorEl.style.display = "none";
+          try {
+            const res = await fetch("/api/reports", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ lat: tapLat, lon: tapLon, description: textarea.value }),
+            });
+            if (!res.ok) throw new Error(`request failed: ${res.status}`);
+            const report = (await res.json()) as Report;
+            knownReportsRef.current.set(report.id, report);
+            renderVisibleReports(Leaflet, map);
+            map.closePopup(popup);
+          } catch {
+            button.disabled = false;
+            errorEl.textContent = "Couldn't create the report — try again.";
+            errorEl.style.display = "block";
+          }
+        })();
+      });
+
+      textarea.focus();
+    };
+
     void import("leaflet").then(async (L) => {
       if (cancelled || !containerRef.current) return;
 
@@ -112,22 +175,7 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
       map.on("moveend", () => renderVisibleReports(L, map));
 
       map.on("click", (e: L.LeafletMouseEvent) => {
-        const { lat: tapLat, lng: tapLon } = e.latlng;
-        const id = `pending-${Date.now()}`;
-        knownReportsRef.current.set(id, {
-          id,
-          lat: tapLat,
-          lon: tapLon,
-          geohash: "",
-          createdAt: new Date().toISOString(),
-        });
-        renderVisibleReports(L, map);
-
-        void fetch("/api/reports", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ lat: tapLat, lon: tapLon }),
-        });
+        openDraftPopup(L, map, e.latlng.lat, e.latlng.lng);
       });
 
       const res = await fetch("/api/radar");

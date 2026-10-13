@@ -11,13 +11,17 @@ export function GET(): NextResponse {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  const { lat, lon } = (await req.json()) as { lat: number; lon: number };
+  const { lat, lon, description } = (await req.json()) as {
+    lat: number;
+    lon: number;
+    description?: string;
+  };
   if (typeof lat !== "number" || typeof lon !== "number") {
     return NextResponse.json({ error: "lat and lon must be numbers" }, { status: 400 });
   }
 
   const geohash = ngeohash.encode(lat, lon, 6);
-  const report = createReport(lat, lon, geohash);
+  const report = createReport(lat, lon, geohash, description ?? "");
   publishReport(report);
   return NextResponse.json(report, { status: 201 });
 }
