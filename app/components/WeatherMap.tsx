@@ -2,14 +2,11 @@
 
 import "leaflet/dist/leaflet.css";
 import type L from "leaflet";
-import ngeohash from "ngeohash";
 import { useEffect, useRef } from "react";
 
 export interface WeatherMapProps {
   lat: number;
   lon: number;
-  /** Precision-6 geohash of the place currently being viewed. */
-  placeGeohash: string;
 }
 
 interface Report {
@@ -24,13 +21,6 @@ interface Report {
 // that so a marker fades out and disappears client-side without needing
 // another round trip to notice it expired.
 const REPORT_LIFETIME_MS = 2 * 60 * 60 * 1000;
-// Coarser than the precision-6 geohash reports are stored at (~4.9km cell),
-// so a report is shown to anyone viewing roughly the same area, not just an
-// exact geohash match.
-const AREA_PREFIX_LENGTH = 5;
-
-const inSameArea = (reportGeohash: string, placeGeohash: string): boolean =>
-  reportGeohash.slice(0, AREA_PREFIX_LENGTH) === placeGeohash.slice(0, AREA_PREFIX_LENGTH);
 
 const reportOpacity = (createdAt: string): number => {
   const age = Date.now() - new Date(createdAt).getTime();
@@ -65,39 +55,50 @@ const reportPopupHtml = (report: Report): string =>
 
 // Leaflet needs `window`, so this only ever runs client-side (see the
 // dynamic(..., { ssr: false }) import in app/page.tsx).
-export default function WeatherMap({ lat, lon, placeGeohash }: WeatherMapProps) {
+export default function WeatherMap({ lat, lon }: WeatherMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const radarLayerRef = useRef<L.TileLayer | null>(null);
-  const leafletRef = useRef<typeof L | null>(null);
-  const reportMarkersRef = useRef<Map<string, { marker: L.Marker; report: Report }>>(new Map());
-  const placeGeohashRef = useRef(placeGeohash);
-
-  useEffect(() => {
-    placeGeohashRef.current = placeGeohash;
-  }, [placeGeohash]);
+  // Every report seen so far (seed fetch + SSE), regardless of whether it's
+  // currently inside the visible map — the source of truth for re-filtering
+  // on pan/zoom without another round trip.
+  const knownReportsRef = useRef<Map<string, Report>>(new Map());
+  // Only the reports currently rendered as markers (a subset of the above,
+  // filtered to the map's current bounds).
+  const reportMarkersRef = useRef<Map<string, L.Marker>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
     let eventSource: EventSource | undefined;
     let fadeInterval: ReturnType<typeof setInterval> | undefined;
 
-    const upsertReport = (Leaflet: typeof L, map: L.Map, report: Report): void => {
-      if (!inSameArea(report.geohash, placeGeohashRef.current)) return;
-      const existing = reportMarkersRef.current.get(report.id);
-      if (existing) return;
-
-      const marker = Leaflet.marker([report.lat, report.lon], {
-        icon: reportIcon(Leaflet, reportOpacity(report.createdAt)),
-      })
-        .addTo(map)
-        .bindPopup(reportPopupHtml(report));
-      reportMarkersRef.current.set(report.id, { marker, report });
+    // A report is only shown if it's inside what's actually on screen right
+    // now — a fixed-size "area" cell doesn't track the map's real zoom level,
+    // which can show anything from a suburb to a continent (see crit 9 ADR,
+    // decision 3: this replaced an earlier geohash-prefix filter that silently
+    // dropped nearly every tap once the map was zoomed out further than a
+    // ~4km cell).
+    const renderVisibleReports = (Leaflet: typeof L, map: L.Map): void => {
+      const bounds = map.getBounds();
+      for (const [id, report] of knownReportsRef.current) {
+        const visible = bounds.contains([report.lat, report.lon]);
+        const marker = reportMarkersRef.current.get(id);
+        if (visible && !marker) {
+          const newMarker = Leaflet.marker([report.lat, report.lon], {
+            icon: reportIcon(Leaflet, reportOpacity(report.createdAt)),
+          })
+            .addTo(map)
+            .bindPopup(reportPopupHtml(report));
+          reportMarkersRef.current.set(id, newMarker);
+        } else if (!visible && marker) {
+          map.removeLayer(marker);
+          reportMarkersRef.current.delete(id);
+        }
+      }
     };
 
     void import("leaflet").then(async (L) => {
       if (cancelled || !containerRef.current) return;
-      leafletRef.current = L;
 
       const map = mapRef.current ?? L.map(containerRef.current).setView([lat, lon], 7);
       mapRef.current = map;
@@ -108,16 +109,19 @@ export default function WeatherMap({ lat, lon, placeGeohash }: WeatherMapProps) 
 
       L.marker([lat, lon]).addTo(map);
 
+      map.on("moveend", () => renderVisibleReports(L, map));
+
       map.on("click", (e: L.LeafletMouseEvent) => {
         const { lat: tapLat, lng: tapLon } = e.latlng;
-        const optimistic: Report = {
-          id: `pending-${Date.now()}`,
+        const id = `pending-${Date.now()}`;
+        knownReportsRef.current.set(id, {
+          id,
           lat: tapLat,
           lon: tapLon,
-          geohash: ngeohash.encode(tapLat, tapLon, 6),
+          geohash: "",
           createdAt: new Date().toISOString(),
-        };
-        upsertReport(L, map, optimistic);
+        });
+        renderVisibleReports(L, map);
 
         void fetch("/api/reports", {
           method: "POST",
@@ -137,21 +141,26 @@ export default function WeatherMap({ lat, lon, placeGeohash }: WeatherMapProps) 
       const seedRes = await fetch("/api/reports");
       if (!cancelled && seedRes.ok) {
         const reports = (await seedRes.json()) as Report[];
-        for (const report of reports) upsertReport(L, map, report);
+        for (const report of reports) knownReportsRef.current.set(report.id, report);
+        renderVisibleReports(L, map);
       }
 
       eventSource = new EventSource("/api/reports/stream");
       eventSource.onmessage = (event) => {
         const report = JSON.parse(event.data) as Report;
-        upsertReport(L, map, report);
+        knownReportsRef.current.set(report.id, report);
+        renderVisibleReports(L, map);
       };
 
       fadeInterval = setInterval(() => {
-        for (const [id, { marker, report }] of reportMarkersRef.current) {
+        for (const [id, marker] of reportMarkersRef.current) {
+          const report = knownReportsRef.current.get(id);
+          if (!report) continue;
           const opacity = reportOpacity(report.createdAt);
           if (opacity <= 0) {
             map.removeLayer(marker);
             reportMarkersRef.current.delete(id);
+            knownReportsRef.current.delete(id);
           } else {
             marker.setIcon(reportIcon(L, opacity));
           }
@@ -170,43 +179,6 @@ export default function WeatherMap({ lat, lon, placeGeohash }: WeatherMapProps) 
   useEffect(() => {
     mapRef.current?.setView([lat, lon]);
   }, [lat, lon]);
-
-  // Switching place drops reports that no longer match, then re-seeds from
-  // the server for the new area (the SSE stream only carries reports
-  // created *after* this client connected).
-  useEffect(() => {
-    const L = leafletRef.current;
-    const map = mapRef.current;
-    if (!L || !map) return;
-
-    for (const [id, { marker, report }] of reportMarkersRef.current) {
-      if (!inSameArea(report.geohash, placeGeohash)) {
-        map.removeLayer(marker);
-        reportMarkersRef.current.delete(id);
-      }
-    }
-
-    let cancelled = false;
-    void fetch("/api/reports")
-      .then((res) => (res.ok ? (res.json() as Promise<Report[]>) : []))
-      .then((reports) => {
-        if (cancelled) return;
-        for (const report of reports) {
-          if (!inSameArea(report.geohash, placeGeohash)) continue;
-          if (reportMarkersRef.current.has(report.id)) continue;
-          const marker = L.marker([report.lat, report.lon], {
-            icon: reportIcon(L, reportOpacity(report.createdAt)),
-          })
-            .addTo(map)
-            .bindPopup(reportPopupHtml(report));
-          reportMarkersRef.current.set(report.id, { marker, report });
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [placeGeohash]);
 
   return <div ref={containerRef} style={{ height: "60vh", width: "100%" }} />;
 }

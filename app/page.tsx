@@ -85,7 +85,7 @@ export default function Home() {
             {place.name}
             {place.state ? `, ${place.state}` : ""}
           </h2>
-          <WeatherMap lat={place.lat} lon={place.lon} placeGeohash={place.geohash} />
+          <WeatherMap lat={place.lat} lon={place.lon} />
           <p>Nearest radar: {station.name}</p>
 
           {weather?.warnings?.data && weather.warnings.data.length > 0 && (

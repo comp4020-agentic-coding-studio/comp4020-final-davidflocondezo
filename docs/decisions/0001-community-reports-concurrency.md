@@ -99,24 +99,38 @@ report posted seconds ago. Treated as acceptable — the brief's "is it raining
 near me" question is answered by radar + reports together, and reports are
 explicitly the faster-moving layer.
 
-### 3. Who sees a report: geohash-prefix match, not global broadcast
+### 3. Who sees a report: the map's visible bounds, not a fixed-size cell
 
 Every report is broadcast to every open SSE connection (cheap at this
-scale), but the client only renders one if its geohash shares a 5-character
-prefix with the geohash of the place currently being viewed (`app/page.tsx`
-already geohashes the viewed place at precision 6 for the visit trace in
-`lib/db.ts`; reports reuse that same encoding, filtered at the coarser
-5-character/~4.9km cell). A report dropped in Perth never appears on a
-screen showing Canberra.
+scale); the client decides what to actually render by checking each report's
+lat/lon against `map.getBounds()` — Leaflet's own notion of what's currently
+on screen — re-checked on every `moveend` (pan or zoom). A report dropped in
+Perth never appears on a screen showing Canberra, and panning or zooming the
+map immediately reveals or hides reports as they enter or leave view.
+
+**What this replaced, and why:** the first version filtered by a fixed-size
+geohash-prefix match instead (a report "in the same area" as a 5-character,
+~4km geohash cell around the viewed place). That broke silently: the map
+opens at zoom 7, where the visible area is on the order of 900km across, so
+the matching cell covered under 1% of what was actually on screen. Tapping
+almost anywhere on the visible map posted successfully (confirmed server-side
+and via direct API checks) but the resulting pin fell outside that tiny cell
+and was never rendered — no error, just nothing visibly happening, which is
+what first surfaced this as "tapping the map does nothing." Driving the live
+app with Playwright (`devices["iPhone 13"]` + geolocation at Canberra,
+clicking/tapping the map, reading network and DOM state back) reproduced it
+directly: a `201` from `/api/reports`, the report present in a direct
+`GET /api/reports`, and zero new marker elements in the DOM. The bounds-based
+version has no fixed-size notion of "nearby" to drift out of sync with zoom.
 
 **Alternative considered:** server-side spatial filtering (only push a
 report to streams whose last-known viewport is nearby). Rejected for this
-scope — it would mean the server tracking each connection's current place,
-adding state the simpler client-side filter doesn't need. Correct behavior
-for a pod all viewing the same place at a crit demo; the cost is that every
-client receives every report over the wire regardless of relevance, which is
-fine at this report volume and would need revisiting at a much larger
-userbase.
+scope — it would mean the server tracking each connection's current
+viewport, adding state the simpler client-side filter doesn't need. Correct
+behavior for a pod all viewing the same place at a crit demo; the cost is
+that every client receives every report over the wire regardless of
+relevance, which is fine at this report volume and would need revisiting at
+a much larger userbase.
 
 ### 4. What a reconnecting or late-arriving viewer sees
 

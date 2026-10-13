@@ -133,6 +133,23 @@ de-duplication, no way to retract a mistaken tap. Sits alongside the
 login/pinned-dashboard scope note from crit 8 as a known gap, not an
 oversight.
 
+**Bug found after deploy: tapping the map appeared to do nothing.** I'd only
+verified the POST/SSE plumbing directly (curl, a small Node script) before
+reporting this feature done — never actually clicked the map in a browser.
+When asked why tapping didn't seem to work, I drove the live site with
+Playwright (desktop click and an emulated iPhone tap, both against
+`https://comp4020-final-davidflocondezo.fly.dev/`) and found the tap *did*
+POST successfully and the report *was* saved — it just never rendered,
+because the client-side "is this report nearby" filter used a fixed
+~4km geohash cell while the map itself opens zoomed out to ~900km across.
+Tapping almost anywhere outside a sliver smaller than a pixel silently
+dropped the pin with no error. Replaced that filter with a check against
+Leaflet's actual visible bounds (`map.getBounds()`, re-checked on every
+pan/zoom) — see `docs/decisions/0001-community-reports-concurrency.md`,
+decision 3, for the full account. Lesson for this project: a 201 response
+and a database row are not the same claim as "the user sees it" — the actual
+UI needs driving, not just the API.
+
 ## How I directed, grounded and corrected the work
 
 [To be filled in with commit links as the build progresses — markers follow
