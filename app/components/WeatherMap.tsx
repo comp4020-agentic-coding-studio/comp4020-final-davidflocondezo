@@ -460,6 +460,14 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
       radarLayerRef.current = L.tileLayer(tileUrlTemplate, {
         opacity: 0.6,
         attribution: "Radar © RainViewer",
+        // RainViewer's tile API tops out at zoom 7 (lib/radar.ts); without
+        // this, zooming the base map in further still requests tiles at the
+        // current (higher) zoom, which RainViewer doesn't have — those come
+        // back as placeholder "Zoom level not supported" squares. This caps
+        // the *requests* at 7 and has Leaflet upscale that same tile to fill
+        // higher zoom levels instead, which is the standard way to overlay a
+        // lower-resolution source on a map that zooms further.
+        maxNativeZoom: 7,
       }).addTo(map);
 
       const seedRes = await fetch("/api/reports");
