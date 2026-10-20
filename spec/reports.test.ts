@@ -57,17 +57,25 @@ it("a posted report reaches an already-open /api/reports/stream connection", asy
   });
   req.on("error", () => {});
 
+  const lat = -35.3 + Math.random() * 0.01;
+  const lon = 149.1 + Math.random() * 0.01;
+
+  // Other spec files run their own POSTs against this same shared server, so
+  // the stream can legitimately carry reports this test didn't create —
+  // match on this test's own lat/lon rather than grabbing the first line.
   const received = new Promise<{ lat: number; lon: number }>((resolve) => {
     let buffer = "";
     onChunk = (text) => {
       buffer += text;
-      const match = buffer.match(/^data: (.*)$/m);
-      if (match) resolve(JSON.parse(match[1]));
+      for (const match of buffer.matchAll(/^data: (.*)$/gm)) {
+        const report = JSON.parse(match[1]) as { lat: number; lon: number };
+        if (Math.abs(report.lat - lat) < 1e-6 && Math.abs(report.lon - lon) < 1e-6) {
+          resolve(report);
+          return;
+        }
+      }
     };
   });
-
-  const lat = -35.3 + Math.random() * 0.01;
-  const lon = 149.1 + Math.random() * 0.01;
 
   // Give the stream a moment to be registered server-side before posting.
   await new Promise((resolve) => setTimeout(resolve, 100));

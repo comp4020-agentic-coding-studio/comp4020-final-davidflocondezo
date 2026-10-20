@@ -161,7 +161,87 @@ decision 3, for the full account. Lesson for this project: a 201 response
 and a database row are not the same claim as "the user sees it" — the actual
 UI needs driving, not just the API.
 
-## How I directed, grounded and corrected the work
+## Crit 10: ownership enforcement
 
-[To be filled in with commit links as the build progresses — markers follow
-the links given here, not a general trawl of the repo.]
+The satisfy this week's brief, I decided to add a delete functionality to the weather reports but only allow the creator to delete their own reports. I also made the report's description editable by its owner only and added a validate/confirm report button that can act as an upvote that everyone can give to a report to verify it is real. This can be done once per user. The combination of the 3 provide a great response to this crit.
+
+To achieve this the **Ownership.** `reports` gained a `visitor_id` column, set from the creating request's existing `visitor_id` cookie (`lib/visitor.ts`, already issued per browser since crit 8 for the weather trace feature — no new identity scheme needed). `DELETE /api/reports/:id` (new route,
+`app/api/reports/[id]/route.ts`) checks `visitor_id` match in the SQL delete
+itself (`deleteReportIfOwner`, `lib/db.ts`), so there's no window where a check passes and a later write targets a different row. A non-owner gets 403; a missing report gets a 404; the two are distinguished only after the delete already failed, so the failure path can't be used to probe which reports exist versus who owns
+them beyond that.
+
+### Server-side logging
+
+`lib/logger.ts` writes one JSON line per server-side mutation
+(`report.create`, `report.delete`, `trace.save`) to stdout: `visitorId`,
+`allowed`, and the outcome. No new infrastructure — Fly retains a machine's
+stdout and `flyctl logs -a <repo>` reads it after the fact, which is what
+"persists beyond the crit" actually requires; a bespoke log store would be
+solving a problem Fly already solves. A denied delete logs
+`allowed: false` with a reason (`"not the owner"` vs `"not found"`), so the
+cross-user-write failure case the brief calls out is visible in the log
+stream, not just in the HTTP status code the demo would otherwise have to
+narrate from a terminal running curl.
+
+**Verified before calling this done:** two `fetch()` calls with independent
+cookie jars (the same shape as two browser profiles sharing no storage) — one
+creates a report, the other's delete attempt gets 403 and the report
+survives, the owner's own delete then succeeds (`spec/access-control.test.ts`).
+Also checked that a report payload never carries `visitorId`/`visitor_id` in
+either the list response or the SSE broadcast, for both the owner and a
+stranger's view of the same report.
+
+### Description edit
+
+The description edit is just a simple functionality that allows the creator of the weather report to edit the description in case any additional warnings or information are made available.
+
+**Editing reuses the exact ownership shape as delete, deliberately.**
+`updateReportDescriptionIfOwner` (`lib/db.ts`) puts the `visitor_id` check
+inside the `UPDATE ... WHERE id = ? AND visitor_id = ?` statement itself —
+same reasoning as the delete: no read-then-write gap for a race to land in.
+`PATCH /api/reports/:id` (`app/api/reports/[id]/route.ts`) mirrors `DELETE`'s
+403-vs-404 distinction and logs `report.edit` the same way `report.delete`
+is logged. Keeping edit and delete structurally identical means there's one
+pattern to get right for "only the owner may mutate this," not two.
+
+### Once-per-user confirm
+
+Lastly the confirm just allows users to confrim a weather warning if they are aware of it. Once per user so that it doesn't get false confirmations.
+
+**Confirm/upvote is a different kind of server-enforced rule.** Ownership
+answers "is this your own thing to change," which a client could in
+principle get right on its own and the server just double-checks. "At most
+once per visitor" is different: a client has no way to know whether *this*
+device already confirmed without asking the server, and there's no
+UI-hiding equivalent of hiding someone else's delete button — any visitor
+is allowed to confirm, including the report's own creator (an explicit
+choice: for an anonymous, 2-hour-lived community report, blocking
+self-confirmation would mostly just be friction, not a real guarantee of
+anything, since nothing stops a visitor from reporting what they can already
+see is true). So this is enforced as a database constraint, not application
+logic: `report_confirmations` has `PRIMARY KEY (report_id, visitor_id)`, and
+`confirmReport` does `INSERT OR IGNORE` against it — a repeat confirm is a
+no-op at the SQL level, not something a bug in the route handler's `if`
+logic could accidentally allow twice. `POST /api/reports/:id/confirm`
+(new route) always returns 200, with `confirmCount` and `confirmedByMe`; a
+repeat confirm is logged as `allowed: true, reason: "already confirmed"`
+rather than treated as an error, since the user's second click isn't wrong,
+it's just redundant.
+
+**Ownership vs. once-per-user both stay requester-relative, which is why
+they're excluded from the SSE broadcast the same way `visitor_id` already
+was.** `confirmedByMe` means something different to every open connection —
+whether *that* visitor confirmed — so `publishReport` strips it just like it
+strips `visitorId`, and the `confirmed`/`edited` SSE events carry only the
+shared fact (`confirmCount`, `description`), never a full `Report` object a
+client might otherwise naively adopt as if it applied to them too.
+
+**Verified:** `spec/access-control.test.ts` extended to cover a non-owner's
+edit being rejected (403, description unchanged) and the owner's own edit
+succeeding; confirming twice from the same cookie jar holding the count at 1,
+a second visitor bringing it to 2, and each visitor's own `confirmedByMe`
+being correct for their own view. Manually walked the full two-visitor
+sequence with independent `curl` cookie jars — create, self-confirm,
+repeat-confirm (no-op), stranger-confirm, stranger-edit (403),
+owner-edit (200), stranger-delete (403), owner-delete (204) — and confirmed
+every step produced a distinguishable log line.

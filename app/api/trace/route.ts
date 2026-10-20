@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getTrace, saveTrace } from "../../../lib/db.ts";
+import { logEvent } from "../../../lib/logger.ts";
 import { getOrIssueVisitorId } from "../../../lib/visitor.ts";
 
 export const runtime = "nodejs";
@@ -17,5 +18,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const res = NextResponse.json({ ok: true });
   const visitorId = getOrIssueVisitorId(req, res);
   saveTrace(visitorId, body);
+  logEvent({ action: "trace.save", visitorId, allowed: true, geohash: body.geohash });
   return res;
 }
