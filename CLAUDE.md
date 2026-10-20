@@ -22,3 +22,14 @@ for small in-the-weeds judgment calls, not for skipping review on
 multi-file or architectural work just because a crit/assignment is due soon.
 A close deadline is a reason to confirm the plan faster, not a reason to skip
 confirming it.
+
+## Restart the dev server after manual build/test cycles
+
+If a `next dev` server is left running in the background while you separately
+run `rm -rf .next`, `pnpm run build`, or anything else that rebuilds/clears
+`.next` out from under it (e.g. to produce a standalone build for manual
+verification), stop and restart the dev server afterward. Leaving the old one
+running against a `.next` directory that changed underneath it causes
+`Cannot find module './<n>.js'` errors on page load --- this has happened
+more than once. Don't wait for the user to report it; restart it as part of
+the same manual build/test step.
