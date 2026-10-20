@@ -7,27 +7,92 @@ import { dirname } from "node:path";
 // Locally this falls back to a gitignored file next to the repo.
 const path = process.env.DATABASE_PATH ?? "/data/app.db";
 
-mkdirSync(dirname(path), { recursive: true });
+// The connection (and schema setup below) is created lazily, on first real
+// use, rather than at module load. `next build`'s "Collecting page data"
+// step imports every route module in parallel workers just to inspect its
+// exports — it never calls anything in them — so an eager connection here
+// used to mean several of those workers opened and migrated this same
+// SQLite file at once, which intermittently failed the build with
+// SQLITE_BUSY even with a `busy_timeout` pragma (the workers could still
+// outlast the timeout under enough contention). A lazy connection means that
+// import-only build step never touches SQLite at all, which removes the
+// race rather than just making it rarer.
+let dbInstance: Database.Database | undefined;
 
-export const db = new Database(path);
-db.pragma("journal_mode = WAL");
-// `next build` can briefly open this same file from more than one worker
-// while collecting route page data; without this a concurrent writer gets an
-// immediate SQLITE_BUSY instead of waiting the few ms the other one needs.
-db.pragma("busy_timeout = 5000");
+function getDb(): Database.Database {
+  if (dbInstance) return dbInstance;
 
-// Deliberately generic: a later crit adds a users table and repoints this at
-// a signed-in user instead of a cookie, without a schema rewrite.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS visits (
-    visitor_id TEXT PRIMARY KEY,
-    geohash TEXT NOT NULL,
-    name TEXT NOT NULL,
-    lat REAL NOT NULL,
-    lon REAL NOT NULL,
-    updated_at TEXT NOT NULL
-  )
-`);
+  mkdirSync(dirname(path), { recursive: true });
+  const db = new Database(path);
+  db.pragma("journal_mode = WAL");
+  // Real concurrent requests (not just the build-time import race this
+  // mainly existed for) can still briefly contend for a write lock; this
+  // means a second writer waits up to 5s instead of failing immediately.
+  db.pragma("busy_timeout = 5000");
+
+  // Deliberately generic: a later crit adds a users table and repoints this
+  // at a signed-in user instead of a cookie, without a schema rewrite.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS visits (
+      visitor_id TEXT PRIMARY KEY,
+      geohash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      lat REAL NOT NULL,
+      lon REAL NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  // Community reports: unverified, user-dropped pins ("raining here right
+  // now"). Kept in the same SQLite volume as `visits` so a reconnecting
+  // viewer sees recent reports rather than starting from a blank map (see
+  // PROCESS.md, crit 9 decision).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY,
+      lat REAL NOT NULL,
+      lon REAL NOT NULL,
+      geohash TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    )
+  `);
+  // The live Fly volume already has a `reports` table from before these
+  // columns existed; add them for that case (CREATE TABLE IF NOT EXISTS
+  // above is a no-op there). Harmless to repeat once they exist.
+  try {
+    db.exec(`ALTER TABLE reports ADD COLUMN description TEXT NOT NULL DEFAULT ''`);
+  } catch {
+    // column already exists
+  }
+  // Ownership for access control (crit 10): only the visitor who created a
+  // report may delete or edit it. A pre-existing row on the live volume has
+  // no owner, so it's left undeletable/uneditable by anyone rather than
+  // guessed at — see deleteReportIfOwner/updateReportDescriptionIfOwner and
+  // PROCESS.md.
+  try {
+    db.exec(`ALTER TABLE reports ADD COLUMN visitor_id TEXT`);
+  } catch {
+    // column already exists
+  }
+
+  // One row per (report, visitor) who confirmed it's real. The primary key
+  // is what makes "once per visitor" a guarantee the database enforces, not
+  // something an app-level check could get wrong — same reasoning as
+  // pinning the delete/edit ownership check inside the SQL statement itself
+  // below.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS report_confirmations (
+      report_id TEXT NOT NULL,
+      visitor_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (report_id, visitor_id)
+    )
+  `);
+
+  dbInstance = db;
+  return db;
+}
 
 export interface Trace {
   geohash: string;
@@ -37,15 +102,16 @@ export interface Trace {
 }
 
 export function getTrace(visitorId: string): Trace | undefined {
-  const row = db
+  const row = getDb()
     .prepare("SELECT geohash, name, lat, lon FROM visits WHERE visitor_id = ?")
     .get(visitorId) as Trace | undefined;
   return row;
 }
 
 export function saveTrace(visitorId: string, trace: Trace): void {
-  db.prepare(
-    `INSERT INTO visits (visitor_id, geohash, name, lat, lon, updated_at)
+  getDb()
+    .prepare(
+      `INSERT INTO visits (visitor_id, geohash, name, lat, lon, updated_at)
      VALUES (@visitorId, @geohash, @name, @lat, @lon, @updatedAt)
      ON CONFLICT(visitor_id) DO UPDATE SET
        geohash = excluded.geohash,
@@ -53,57 +119,13 @@ export function saveTrace(visitorId: string, trace: Trace): void {
        lat = excluded.lat,
        lon = excluded.lon,
        updated_at = excluded.updated_at`,
-  ).run({ visitorId, ...trace, updatedAt: new Date().toISOString() });
+    )
+    .run({ visitorId, ...trace, updatedAt: new Date().toISOString() });
 }
 
-// Community reports: unverified, user-dropped pins ("raining here right
-// now"). Kept in the same SQLite volume as `visits` so a reconnecting viewer
-// sees recent reports rather than starting from a blank map (see PROCESS.md,
-// crit 9 decision). Expiry is enforced here so a stale report can never leak
-// out of `listActiveReports`, even if a client's own fade logic is wrong or
-// skipped.
+// Expiry is enforced in listActiveReports so a stale report can never leak
+// out, even if a client's own fade logic is wrong or skipped.
 export const REPORT_LIFETIME_MS = 2 * 60 * 60 * 1000;
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS reports (
-    id TEXT PRIMARY KEY,
-    lat REAL NOT NULL,
-    lon REAL NOT NULL,
-    geohash TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
-  )
-`);
-// The live Fly volume already has a `reports` table from before these columns
-// existed; add them for that case (CREATE TABLE IF NOT EXISTS above is a
-// no-op there). Harmless to repeat once they exist.
-try {
-  db.exec(`ALTER TABLE reports ADD COLUMN description TEXT NOT NULL DEFAULT ''`);
-} catch {
-  // column already exists
-}
-// Ownership for access control (crit 10): only the visitor who created a
-// report may delete or edit it. A pre-existing row on the live volume has no
-// owner, so it's left undeletable/uneditable by anyone rather than guessed
-// at — see deleteReportIfOwner/updateReportDescriptionIfOwner and PROCESS.md.
-try {
-  db.exec(`ALTER TABLE reports ADD COLUMN visitor_id TEXT`);
-} catch {
-  // column already exists
-}
-
-// One row per (report, visitor) who confirmed it's real. The primary key is
-// what makes "once per visitor" a guarantee the database enforces, not
-// something an app-level check could get wrong — same reasoning as pinning
-// the delete/edit ownership check inside the SQL statement itself below.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS report_confirmations (
-    report_id TEXT NOT NULL,
-    visitor_id TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (report_id, visitor_id)
-  )
-`);
 
 export interface Report {
   id: string;
@@ -144,16 +166,18 @@ export function createReport(
     confirmCount: 0,
     confirmedByMe: false,
   };
-  db.prepare(
-    `INSERT INTO reports (id, lat, lon, geohash, description, created_at, visitor_id)
+  getDb()
+    .prepare(
+      `INSERT INTO reports (id, lat, lon, geohash, description, created_at, visitor_id)
      VALUES (@id, @lat, @lon, @geohash, @description, @createdAt, @visitorId)`,
-  ).run(report);
+    )
+    .run(report);
   return report;
 }
 
 export function listActiveReports(requesterId: string): Report[] {
   const cutoff = new Date(Date.now() - REPORT_LIFETIME_MS).toISOString();
-  return db
+  return getDb()
     .prepare(
       `SELECT r.id, r.lat, r.lon, r.geohash, r.description,
               r.created_at AS createdAt, r.visitor_id AS visitorId,
@@ -170,42 +194,42 @@ export function listActiveReports(requesterId: string): Report[] {
     .map((row) => ({ ...(row as Report), confirmedByMe: Boolean((row as { confirmedByMe: number }).confirmedByMe) }));
 }
 
-// `visitor_id` may be NULL on rows created before ownership existed (see the
-// ALTER TABLE above) — those are nobody's to delete, which `=` naturally
-// gives us since NULL never equals a real visitor id.
+// `visitor_id` may be NULL on rows created before ownership existed — those
+// are nobody's to delete, which `=` naturally gives us since NULL never
+// equals a real visitor id. The delete and its confirmations cleanup run as
+// one transaction so a report's confirmations never outlive the report
+// itself.
 export function deleteReportIfOwner(id: string, visitorId: string): boolean {
-  const result = deleteReportIfOwnerTxn(id, visitorId);
-  return result.changes > 0;
+  const db = getDb();
+  const deleteIfOwner = db.transaction((reportId: string, owner: string) => {
+    const result = db.prepare(`DELETE FROM reports WHERE id = ? AND visitor_id = ?`).run(reportId, owner);
+    if (result.changes > 0) {
+      db.prepare(`DELETE FROM report_confirmations WHERE report_id = ?`).run(reportId);
+    }
+    return result;
+  });
+  return deleteIfOwner(id, visitorId).changes > 0;
 }
-
-// A report's confirmations have no reason to outlive the report itself; both
-// rows go together or neither does.
-const deleteReportIfOwnerTxn = db.transaction((id: string, visitorId: string) => {
-  const result = db.prepare(`DELETE FROM reports WHERE id = ? AND visitor_id = ?`).run(id, visitorId);
-  if (result.changes > 0) {
-    db.prepare(`DELETE FROM report_confirmations WHERE report_id = ?`).run(id);
-  }
-  return result;
-});
 
 // Same shape as deleteReportIfOwner: the ownership check lives inside the
 // UPDATE's WHERE clause itself, so there's no separate read-then-write step
 // a race could land between.
 export function updateReportDescriptionIfOwner(id: string, visitorId: string, description: string): boolean {
-  const result = db
+  const result = getDb()
     .prepare(`UPDATE reports SET description = ? WHERE id = ? AND visitor_id = ?`)
     .run(description.slice(0, REPORT_DESCRIPTION_MAX_LENGTH), id, visitorId);
   return result.changes > 0;
 }
 
 export function reportExists(id: string): boolean {
-  return db.prepare(`SELECT 1 FROM reports WHERE id = ?`).get(id) !== undefined;
+  return getDb().prepare(`SELECT 1 FROM reports WHERE id = ?`).get(id) !== undefined;
 }
 
 // INSERT OR IGNORE + the (report_id, visitor_id) primary key is what makes a
 // repeat confirm a no-op rather than a second row — the database enforces
 // "once per visitor," not just this function's own logic.
 export function confirmReport(reportId: string, visitorId: string): { added: boolean; confirmCount: number } {
+  const db = getDb();
   const result = db
     .prepare(`INSERT OR IGNORE INTO report_confirmations (report_id, visitor_id, created_at) VALUES (?, ?, ?)`)
     .run(reportId, visitorId, new Date().toISOString());

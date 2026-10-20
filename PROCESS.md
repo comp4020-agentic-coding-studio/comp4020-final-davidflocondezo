@@ -245,3 +245,37 @@ sequence with independent `curl` cookie jars — create, self-confirm,
 repeat-confirm (no-op), stranger-confirm, stranger-edit (403),
 owner-edit (200), stranger-delete (403), owner-delete (204) — and confirmed
 every step produced a distinguishable log line.
+
+## Bug found by CI, after local testing passed: the deploy build itself
+
+A local rebuild loop (3 runs) passed clean after the ownership work above, but
+CI's own `deploy` job — which rebuilds the Docker image remotely on push —
+failed with `SqliteError: database is locked` / `SQLITE_BUSY` during `next
+build`'s "Collecting page data" step. Passing locally and failing in CI on the
+same build command meant the race depended on timing/parallelism, not on
+anything specific to my machine.
+
+The actual cause: `lib/db.ts` opened the SQLite connection and ran its
+`CREATE TABLE`/`ALTER TABLE` statements eagerly, at module load. `next
+build`'s page-data step imports every route module in parallel worker
+processes just to inspect its exports — it never calls anything in them —
+so several workers ended up opening and migrating the same SQLite file at
+once, purely as a side effect of being imported. A `busy_timeout` pragma
+(added earlier, see the delete/edit section above) made this less likely by
+letting a blocked writer retry for a few seconds instead of failing
+immediately, but it was still a race against however many workers a given
+machine spawns — it happened to lose on GitHub Actions' runner and not on
+three manual attempts on my own laptop, which is exactly the kind of
+intermittent failure a fixed timeout papers over rather than removes.
+
+Fixed properly rather than raising the timeout further: `lib/db.ts` now opens
+the connection and runs schema setup lazily, inside a `getDb()` called from
+every exported function, instead of at the top of the module. `next build`'s
+import-only page-data step never calls any of those functions, so it no
+longer touches SQLite at all — the race isn't rarer, it's structurally not
+possible, since the thing that was racing (multiple workers opening the file
+on import) no longer happens. Verified by rebuilding 5 times in a row with no
+`DATABASE_PATH` set at all — meaning the default path is `/data/app.db`,
+which doesn't exist and isn't writable on my laptop, so any accidental
+build-time database touch would crash loudly rather than silently coincide.
+All 5 builds succeeded.
