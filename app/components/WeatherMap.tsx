@@ -40,6 +40,26 @@ const reportOpacity = (createdAt: string): number => {
   return Math.max(0, 1 - age / REPORT_LIFETIME_MS);
 };
 
+// Marks the resolved location the weather/radar/forecast on screen are for.
+// A divIcon, like reportIcon below, rather than Leaflet's default L.Icon:
+// Leaflet's default marker image (marker-icon.png etc.) is built assuming a
+// plain <script> include, so its relative image paths 404 once Leaflet is
+// loaded through a bundler (this app's dynamic import()) instead — the
+// broken-image box this was replacing. Blue, not amber, so it's never
+// mistaken for a community report pin (reportIcon below).
+function locationIcon(Leaflet: typeof L): L.DivIcon {
+  return Leaflet.divIcon({
+    className: "",
+    html: `<div style="
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #2f6fed; border: 2px solid #ffffff;
+      box-shadow: 0 0 0 1px #2f6fed;
+    "></div>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+  });
+}
+
 // Plain amber circle, not the red/triangle styling an official warning would
 // use, so a community report is never visually mistaken for one (see
 // PROCESS.md, crit 9 decision).
@@ -446,7 +466,7 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
         attribution: "© OpenStreetMap contributors",
       }).addTo(map);
 
-      L.marker([lat, lon]).addTo(map);
+      L.marker([lat, lon], { icon: locationIcon(L) }).addTo(map);
 
       map.on("moveend", () => renderVisibleReports(L, map));
 
