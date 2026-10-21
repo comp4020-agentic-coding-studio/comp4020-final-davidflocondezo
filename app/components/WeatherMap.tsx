@@ -100,19 +100,38 @@ const escapeHtml = (s: string): string =>
 // not tuned per warning type.
 const WARNING_RADIUS_METERS = 25_000;
 
-// A single fixed style for every warning today — not yet differentiated by
-// the CAP alert's own severity field (see lib/capWarnings.ts), which is a
-// separate, later change.
-function warningCircleOptions(): L.CircleMarkerOptions {
+// CAP v1.2 defines severity as exactly these 5 values (OASIS spec) — a
+// closed enum, not an open string, so this lookup is exhaustive by
+// construction rather than needing a fallback for "most" inputs. Yellow ->
+// orange -> red for low -> high severity is the dominant international
+// weather-alert convention (Canada, Norway, India, China all use some
+// variant); "Unknown" keeps the colors this app used before severity was
+// differentiated at all, since BOM's own feed leaves it unset more often
+// than not (43 of 82 live warnings checked during development) — that's a
+// gap in BOM's data, not a signal the warning is actually low-severity, so
+// it gets the same middle-ground look as before rather than being treated
+// as mild.
+const SEVERITY_COLORS: Record<string, { color: string; fillColor: string }> = {
+  Extreme: { color: "#7b241c", fillColor: "#c0392b" },
+  Severe: { color: "#c0392b", fillColor: "#e67e22" },
+  Moderate: { color: "#d68910", fillColor: "#f1c40f" },
+  Minor: { color: "#9a7d0a", fillColor: "#f4d03f" },
+};
+const DEFAULT_SEVERITY_COLORS = { color: "#c0392b", fillColor: "#e67e22" };
+
+function warningCircleOptions(severity: string): L.CircleMarkerOptions {
+  const { color, fillColor } = SEVERITY_COLORS[severity] ?? DEFAULT_SEVERITY_COLORS;
   // Amber is already the community-report convention (crit 9's documented
-  // decision) for "unverified, person-reported" — this deliberately avoids
-  // it so a warning circle is never mistaken for one.
-  return { color: "#c0392b", weight: 2, fillColor: "#e67e22", fillOpacity: 0.15 };
+  // decision) for "unverified, person-reported" — none of the severity
+  // tiers above use it, so a warning circle is never mistaken for one.
+  return { color, weight: 2, fillColor, fillOpacity: 0.15 };
 }
 
 function warningPopupHtml(warning: WarningArea, placeName: string): string {
+  const { color } = SEVERITY_COLORS[warning.severity] ?? DEFAULT_SEVERITY_COLORS;
   return `
     <strong>${escapeHtml(warning.headline)}</strong><br/>
+    <span style="color: ${color}; font-weight: bold;">${escapeHtml(warning.severity)} severity</span><br/>
     ${warning.description ? `${escapeHtml(warning.description)}<br/>` : ""}
     ${warning.instruction ? `<p style="margin: 6px 0;">${escapeHtml(warning.instruction)}</p>` : ""}
     <span style="color: #555; font-size: 0.85em;">
@@ -549,7 +568,7 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
             for (const place of warning.places) {
               L.circle([place.lat, place.lon], {
                 radius: WARNING_RADIUS_METERS,
-                ...warningCircleOptions(),
+                ...warningCircleOptions(warning.severity),
               })
                 .addTo(map)
                 // A warning's real description + instructions (lib/capWarnings.ts)

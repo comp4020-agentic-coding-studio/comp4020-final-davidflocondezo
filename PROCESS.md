@@ -424,3 +424,58 @@ advance on its own shortly after, proving the background refresh actually
 ran and replaced it; 5 concurrent requests fired immediately after a restart
 all returned in under 0.1s with only one refresh observed, not five.
 
+## Warning severity color-coding
+
+`WarningArea.severity` came from the CAP alert's own `<severity>` tag and had
+been parsed and threaded through the whole pipeline since the warnings work
+above, but nothing rendered it — every circle used the same fixed red/orange
+regardless of severity. Asked directly how severity was being
+differentiated, the honest answer was "it isn't yet," which is the reason
+for this pass.
+
+CAP v1.2's `severity` is a closed enum, not an open string: `Extreme`,
+`Severe`, `Moderate`, `Minor`, `Unknown`. Checked against the live feed before
+designing anything: of 82 resolved warnings at the time, `Unknown: 43,
+Minor: 21, Moderate: 17, Severe: 1` — `Unknown` is the largest group, not an
+edge case. BOM's own feed leaves it unset more often than it sets it, which
+says nothing about the warning's actual severity, so treating `Unknown` as
+low-severity would misrepresent real warnings (confirmed live: a genuine
+"Severe Thunderstorm Warning" near Sydney has an `Unknown` CAP severity
+field). Asked the user how to handle this before implementing; confirmed
+`Unknown` should keep today's existing look unchanged, not be recolored.
+
+`app/components/WeatherMap.tsx`'s `warningCircleOptions` took no argument
+before this; it now takes `severity: string` and looks up a
+yellow→orange→red color pair (`SEVERITY_COLORS`, the dominant international
+convention for low→high severity), falling back to the pre-existing
+red/orange (`DEFAULT_SEVERITY_COLORS`) for `Unknown` or anything
+unrecognized. `warningPopupHtml` gained a colored severity line under the
+headline (same lookup, so popup and circle always agree), shown for every
+severity including `Unknown` rather than hidden conditionally — hiding it
+only for the majority case would make it look like something was omitted
+rather than genuinely unspecified by BOM. This was also the user's own
+request: severity needed to be conveyed as text, not only through color,
+since color alone excludes colorblind users.
+
+No other file changed — this is purely how already-fetched data renders,
+not a new data source or pipeline change.
+
+**Verified:** typecheck/build clean; live against the real feed with
+Playwright — confirmed three distinct stroke colors rendering simultaneously
+on the map (`#c0392b` Severe/Unknown-default, `#d68910` Moderate, `#9a7d0a`
+Minor); opened popups on separate circles and confirmed the text label
+matches each circle's color tier, including confirming the Unknown case
+(Sydney) still reads "Unknown severity" in the unchanged default color,
+and a Minor-tier circle (regional Victoria) shows "Minor severity" in the
+dark-yellow tier color — a direct regression check, since `Unknown` being
+the majority case means it was the one most likely to break silently; full
+spec suite (`pnpm test`) still green, unaffected since this is a client-only
+rendering change with no spec coverage of warning styling.
+
+Hit the same stale-`.next`-cache issue documented in `CLAUDE.md` while
+verifying this: ran `rm -rf .next && pnpm run build` for a manual check
+while the `next dev` server was still running against the old build,
+producing `Cannot find module './908.js'` and zero circles rendering.
+Caught it from the dev log rather than guessing, killed the stale process,
+and restarted cleanly — the rule earned its place in `CLAUDE.md` by catching
+a real second occurrence, not just a hypothetical one.
