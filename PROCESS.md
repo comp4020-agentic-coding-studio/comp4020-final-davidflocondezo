@@ -279,3 +279,98 @@ on import) no longer happens. Verified by rebuilding 5 times in a row with no
 which doesn't exist and isn't writable on my laptop, so any accidental
 build-time database touch would crash loudly rather than silently coincide.
 All 5 builds succeeded.
+
+## Final project: shareable URL + localStorage for the selected place
+
+The selected place now lives in the URL (`?place=<geohash>`) as the primary,
+shareable source of truth, not just a cookie-backed server-side trace. Load
+priority: the URL, then geolocation, then `localStorage`/the existing trace,
+then the hardcoded default — a bookmarked link has to show what it promised
+regardless of where the visitor actually is. `localStorage` writes are
+wrapped in try/catch (private browsing can throw) since it's a same-browser
+convenience cache, not the only copy of this state. Verified in a real
+browser with Playwright against a fresh profile with no cookies: a
+`?place=` URL alone reproduces the right location, and searching updates the
+URL live via `router.replace` (no extra history entries, no full reload).
+
+## Final project: BOM warnings shown as approximate map circles
+
+The first attempt at this — shading the BOM forecast district a warning
+actually applies to — used BOM's own public forecast-map pages, which embed
+real district polygons as pixel coordinates on a map image. Converting those
+pixel coordinates to lat/lon needed guessing at BOM's map projection, since
+nothing publishes it. Two calibration attempts (a simple linear fit, then a
+full affine fit, each checked against precisely located real towns) both
+left 65-80km of error on towns the fit wasn't trained on, with no pattern in
+the residuals that pointed to a fixable cause. Abandoned rather than ship a
+shape that could misrepresent where a warning actually applies — the same
+"don't ship an unverifiable geometry" call already made once for the radar
+WMTS grid in crit 8.
+
+**What shipped instead:** CAP alert text already names real places (e.g.
+"Minor Flood Warning for Bulloo River to Quilpie"). `lib/warningPlaces.ts`
+extracts capitalized phrases from the alert's `areaDesc` and resolves them
+through the location search this app already trusts
+(`searchLocations`, `lib/bom.ts`), drawing a fixed-radius circle (25km) only
+around places that actually resolve — anything that doesn't match (most
+coastal/marine and generic district-name warnings) falls through to the
+existing text-only warnings list, unchanged. This never shows a
+wrong-but-confident shape: a candidate phrase either resolves to a real,
+correctly-placed location or it resolves to nothing, by construction.
+
+Extraction deliberately reads from `areaDesc`, not `headline`. The first
+version read both, and live testing against the full current alert feed (499
+RSS items, 220 after dedup) surfaced a real false-positive: `headline`'s own
+boilerplate ("Warning", "Severe Thunderstorm", the state name when it's
+"Victoria") substring-matches real unrelated places — "Mount Warning" (NSW),
+"Victoria Point" (QLD) — and those resolved as if they were the warning's
+actual location. `areaDesc`'s text (after its own `State: ` prefix) never
+carries that boilerplate, which eliminated both false positives without
+needing a stopword list.
+
+Two more issues only showed up under real load, not the small manual samples
+checked while designing this:
+- `getCapAlerts` originally fetched every RSS item's XML individually —
+  ~500 requests, when the feed reissues the same alert repeatedly and only
+  ~220 are actually distinct. Deduped by the RSS item's own `<title>`
+  (exactly the alert's headline) before fetching any XML, roughly halving
+  the fetch count and being less demanding of a free third-party feed.
+- Resolving every alert's places with one unbounded `Promise.all` across
+  ~220 alerts produced enough concurrent calls to BOM's location search to
+  draw a live 403 from its own (separately pre-existing) Akamai protection
+  during testing — and that same endpoint turned out to be intermittently
+  flaky on its own, confirmed by spaced single requests several seconds
+  apart still occasionally 403'ing with zero added concurrency. Fixed two
+  ways: `resolveWarningPlaces` now treats a failed search the same as "no
+  match" rather than letting one rejection crash the whole alert, and the
+  route resolves alerts in small batches (8 at a time) instead of all at
+  once, since there's no way to make an already-flaky third party reliable,
+  only to stop making it worse.
+
+A `location, { interactive: false }` was also added to the selected-location
+marker: a warning circle whose place happens to be very close to the
+selected location sits under that marker, and I initially suspected (wrongly
+— confirmed with `document.elementFromPoint` during testing) that the marker
+was eating clicks meant for the circle underneath it. The actual cause of
+that specific test failure was simpler: I was clicking just outside the
+circle's drawn SVG path, not actually on it. `interactive: false` is harmless
+regardless (the marker has no popup of its own) and is kept as a precaution,
+but the real lesson was to verify *which* layer swallowed a click
+(`elementFromPoint`) before assuming why, rather than fixing the first
+plausible-sounding cause.
+
+**Verified:** typecheck/build, the full spec suite (unaffected — this is
+client/warnings-only, no server behavior change to what the spec checks),
+and a live Playwright run against the real current CAP feed — a known
+QLD flood warning's circle opens with its full real headline, description,
+emergency-services instructions, and the "approximate area, not an official
+BOM boundary" disclaimer, centered correctly on the named town.
+
+A later fix: a warning's real description/instruction text could run past
+the map's own height, cut off with nothing to scroll it into view. Leaflet
+already has a built-in `maxHeight` popup option that caps the popup and
+applies its own `.leaflet-popup-scrolled` CSS (`overflow: auto`) once
+content exceeds it — the fix was passing that option, not writing custom
+CSS. Verified the content (402px) gets capped to the configured 300px with
+the scrolled class present, confirming the overflow is genuinely scrollable.
+

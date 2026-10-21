@@ -11,7 +11,7 @@ const API_BASE = "https://api.weather.bom.gov.au/v1";
 
 const cache = new Map<string, { expires: number; data: unknown }>();
 
-async function cached<T>(key: string, ttlMs: number, fetcher: () => Promise<T>): Promise<T> {
+export async function cached<T>(key: string, ttlMs: number, fetcher: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.data as T;
   const data = await fetcher();

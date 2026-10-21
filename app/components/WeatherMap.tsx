@@ -3,6 +3,7 @@
 import "leaflet/dist/leaflet.css";
 import type L from "leaflet";
 import { useEffect, useRef } from "react";
+import type { WarningArea } from "../api/bom/warning-areas/route.ts";
 
 export interface WeatherMapProps {
   lat: number;
@@ -89,6 +90,36 @@ const escapeHtml = (s: string): string =>
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+
+// Neither BOM's warnings data nor the CAP feed carries polygon/circle
+// geometry for a warning (confirmed live — see PROCESS.md and
+// lib/warningPlaces.ts), so this is deliberately an approximation: a fixed
+// radius around a place the warning's own text names, not an official
+// boundary. 25km matches the real-world spacing between two towns named in
+// the same flood warning during live testing — a reasonable single default,
+// not tuned per warning type.
+const WARNING_RADIUS_METERS = 25_000;
+
+// A single fixed style for every warning today — not yet differentiated by
+// the CAP alert's own severity field (see lib/capWarnings.ts), which is a
+// separate, later change.
+function warningCircleOptions(): L.CircleMarkerOptions {
+  // Amber is already the community-report convention (crit 9's documented
+  // decision) for "unverified, person-reported" — this deliberately avoids
+  // it so a warning circle is never mistaken for one.
+  return { color: "#c0392b", weight: 2, fillColor: "#e67e22", fillOpacity: 0.15 };
+}
+
+function warningPopupHtml(warning: WarningArea, placeName: string): string {
+  return `
+    <strong>${escapeHtml(warning.headline)}</strong><br/>
+    ${warning.description ? `${escapeHtml(warning.description)}<br/>` : ""}
+    ${warning.instruction ? `<p style="margin: 6px 0;">${escapeHtml(warning.instruction)}</p>` : ""}
+    <span style="color: #555; font-size: 0.85em;">
+      Approximate area near ${escapeHtml(placeName)} — not an official BOM boundary.
+    </span>
+  `;
+}
 
 // Inline, not an icon-font/library dependency — matches the rest of the
 // app's zero-extra-frontend-deps approach (see PROCESS.md's stack rationale).
@@ -466,7 +497,15 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
         attribution: "© OpenStreetMap contributors",
       }).addTo(map);
 
-      L.marker([lat, lon], { icon: locationIcon(L) }).addTo(map);
+      // interactive: false — this marker has no popup of its own, but
+      // Leaflet renders markers in a pane above vector layers (circles,
+      // polygons) by default. Without this, a warning circle (added below)
+      // whose place happens to be very close to the selected location sits
+      // visually and interactively underneath this dot, so a real click
+      // there hits the marker's own DOM element first — which has no
+      // listener — and falls through to the map's default click (confirmed:
+      // this opened "new community report" instead of the warning popup).
+      L.marker([lat, lon], { icon: locationIcon(L), interactive: false }).addTo(map);
 
       map.on("moveend", () => renderVisibleReports(L, map));
 
@@ -496,6 +535,36 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
         for (const report of reports) knownReportsRef.current.set(report.id, report);
         renderVisibleReports(L, map);
       }
+
+      // National list, not scoped to this map's location — the first
+      // request after a 10-minute cache expiry can take several seconds
+      // (fetching ~200 individual CAP alert documents server-side; see
+      // lib/capWarnings.ts), so this never blocks the rest of the map's
+      // setup above, same as radar/reports already don't block each other.
+      void fetch("/api/bom/warning-areas")
+        .then((res) => (res.ok ? (res.json() as Promise<WarningArea[]>) : []))
+        .then((warnings) => {
+          if (cancelled) return;
+          for (const warning of warnings) {
+            for (const place of warning.places) {
+              L.circle([place.lat, place.lon], {
+                radius: WARNING_RADIUS_METERS,
+                ...warningCircleOptions(),
+              })
+                .addTo(map)
+                // A warning's real description + instructions (lib/capWarnings.ts)
+                // can run well past the map's own height; maxHeight caps the
+                // popup and Leaflet's own CSS (.leaflet-popup-scrolled) makes
+                // the overflow scrollable, rather than text running off-screen.
+                .bindPopup(warningPopupHtml(warning, place.name), { maxHeight: 300 });
+            }
+          }
+        })
+        .catch(() => {
+          // Warning circles are an enhancement over the existing text
+          // warnings list (app/page.tsx), not load-bearing — a failed fetch
+          // here just means no circles this load, nothing to recover.
+        });
 
       eventSource = new EventSource("/api/reports/stream");
       // Broadcast "created" events never carry ownership/confirmedByMe (see

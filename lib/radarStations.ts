@@ -1,3 +1,5 @@
+import { haversineKm } from "./geo.ts";
+
 // First-pass station list, for the "nearest radar site" label only — the
 // radar imagery itself is RainViewer's global tile layer (see lib/radar.ts),
 // not a per-station image, so a wrong id here only mislabels the nearest
@@ -20,16 +22,6 @@ export const RADAR_STATIONS: RadarStation[] = [
   { id: "IDR633", name: "Darwin (Berrimah)", lat: -12.4575, lon: 130.9253 },
   { id: "IDR403", name: "Canberra (Captains Flat)", lat: -35.6616, lon: 149.5122 },
 ];
-
-function haversineKm(aLat: number, aLon: number, bLat: number, bLon: number): number {
-  const R = 6371;
-  const dLat = ((bLat - aLat) * Math.PI) / 180;
-  const dLon = ((bLon - aLon) * Math.PI) / 180;
-  const la1 = (aLat * Math.PI) / 180;
-  const la2 = (bLat * Math.PI) / 180;
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
 
 export function nearestStation(lat: number, lon: number): RadarStation {
   return RADAR_STATIONS.reduce((best, s) =>
