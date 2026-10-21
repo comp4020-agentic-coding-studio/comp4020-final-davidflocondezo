@@ -90,6 +90,20 @@ function getDb(): Database.Database {
     )
   `);
 
+  // Last successfully resolved BOM warning-areas list (lib/warningAreas.ts),
+  // so a fresh server start (Fly's machine stops and restarts on inactivity
+  // — fly.toml's auto_stop_machines) can serve something immediately instead
+  // of the ~13s cold fetch, while a real refetch runs in the background. A
+  // single enforced row, not per-visitor data — this is national warning
+  // data, the same for everyone.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS warning_areas_cache (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      data TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
   dbInstance = db;
   return db;
 }
@@ -237,4 +251,24 @@ export function confirmReport(reportId: string, visitorId: string): { added: boo
     .prepare(`SELECT COUNT(*) AS count FROM report_confirmations WHERE report_id = ?`)
     .get(reportId) as { count: number };
   return { added: result.changes > 0, confirmCount: count };
+}
+
+export function getCachedWarningAreas(): { data: unknown; updatedAt: string } | undefined {
+  const row = getDb().prepare(`SELECT data, updated_at AS updatedAt FROM warning_areas_cache WHERE id = 1`).get() as
+    | { data: string; updatedAt: string }
+    | undefined;
+  if (!row) return undefined;
+  return { data: JSON.parse(row.data) as unknown, updatedAt: row.updatedAt };
+}
+
+export function saveWarningAreasCache(data: unknown): void {
+  getDb()
+    .prepare(
+      `INSERT INTO warning_areas_cache (id, data, updated_at)
+       VALUES (1, @data, @updatedAt)
+       ON CONFLICT(id) DO UPDATE SET
+         data = excluded.data,
+         updated_at = excluded.updated_at`,
+    )
+    .run({ data: JSON.stringify(data), updatedAt: new Date().toISOString() });
 }

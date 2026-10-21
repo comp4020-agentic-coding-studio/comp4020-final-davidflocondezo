@@ -45,6 +45,24 @@ async function fetchAlertXml(url: string): Promise<CapAlert | null> {
   };
 }
 
+// Fetching every alert's XML at once (one unbounded Promise.all) measured at
+// ~35s for ~220 alerts; a moderate, deliberately-chosen batch size brought
+// that to a more consistent ~13s without the risk of hammering a third
+// party's server much harder for inconsistent return (tested up to 60 —
+// gains above ~30 were noisy and sometimes an artifact of CDN caching from
+// a prior run, not a real improvement on fresh URLs).
+const FETCH_CONCURRENCY = 30;
+
+async function fetchAlertXmlBatch(urls: string[]): Promise<CapAlert[]> {
+  const alerts: CapAlert[] = [];
+  for (let i = 0; i < urls.length; i += FETCH_CONCURRENCY) {
+    const batch = urls.slice(i, i + FETCH_CONCURRENCY);
+    const batchResults = await Promise.all(batch.map((url) => fetchAlertXml(url)));
+    for (const alert of batchResults) if (alert) alerts.push(alert);
+  }
+  return alerts;
+}
+
 export async function getCapAlerts(): Promise<CapAlert[]> {
   return cached("cap-alerts", 10 * 60_000, async () => {
     const res = await fetch(RSS_URL);
@@ -74,7 +92,6 @@ export async function getCapAlerts(): Promise<CapAlert[]> {
       urls.push(link);
     }
 
-    const alerts = await Promise.all(urls.map((url) => fetchAlertXml(url)));
-    return alerts.filter((a): a is CapAlert => a !== null);
+    return fetchAlertXmlBatch(urls);
   });
 }

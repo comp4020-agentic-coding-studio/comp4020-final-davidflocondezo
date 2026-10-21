@@ -3,7 +3,7 @@
 import "leaflet/dist/leaflet.css";
 import type L from "leaflet";
 import { useEffect, useRef } from "react";
-import type { WarningArea } from "../api/bom/warning-areas/route.ts";
+import type { WarningArea } from "../../lib/warningAreas.ts";
 
 export interface WeatherMapProps {
   lat: number;

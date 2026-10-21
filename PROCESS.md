@@ -374,3 +374,53 @@ content exceeds it — the fix was passing that option, not writing custom
 CSS. Verified the content (402px) gets capped to the configured 300px with
 the scrolled class present, confirming the overflow is genuinely scrollable.
 
+## Final project: warning circles were slow, and a naive persistence fix would have been unsafe
+
+Warning circles took 5-35s to appear after page load — slower than
+acceptable, and inconsistent. Profiling found the real bottleneck:
+`lib/capWarnings.ts` fetched all ~218 current CAP alerts' individual XML
+documents with one unbounded `Promise.all`. Testing different concurrency
+levels against *fresh, non-overlapping* URLs each time (an earlier read
+using the same 60 URLs across tests was fooled by what looks like a CDN
+warming its own cache, showing a false 100x speedup) found real gains up to
+about concurrency 30 (~35s → ~13s), with no consistent benefit pushing
+higher — and real risk of hammering a third-party feed harder for little
+return, the same restraint already applied to `resolveWarningPlaces`'s
+BOM-search batching.
+
+The user separately asked whether persisting the result across server
+restarts (Fly's machine stops and restarts on inactivity) could make the app
+show a warning after it's been cancelled, or miss a brand-new one — asked
+unprompted, and the right question to ask before building this. A naive
+"cache forever across restarts" would risk exactly that: CAP alerts are
+live, safety-relevant data, which is why the existing 10-minute in-memory
+TTL exists at all. The version that shipped instead is stale-while-
+revalidate (`lib/warningAreas.ts`, backed by a new one-row
+`warning_areas_cache` table in `lib/db.ts`, same SQLite volume as
+reports/trace): a fresh server start serves the last persisted result
+instantly rather than blank, while a real refetch already runs in the
+background and replaces both the in-memory cache and the persisted row the
+moment it completes. A module-level in-flight-refresh guard means several
+requests arriving during that window share one refresh rather than each
+kicking off a redundant one. The only case persisted data is ever shown at
+all is the very first request after a restart, and it's never stale by more
+than one fetch cycle (~13s) — the same bound as normal operation, never
+"until the next 10-minute window."
+
+This also prompted consolidating logic that had drifted into two places: the
+route handler previously owned the batching/resolution loop directly, and
+`WarningArea` was independently declared in both the route and
+`WeatherMap.tsx`. Both now live in `lib/warningAreas.ts`, with the route
+reduced to a plain fetch-and-respond and the component importing the type
+rather than redeclaring it.
+
+**Verified:** typecheck/build; a fresh process with nothing persisted still
+pays the real fetch cost (measured 7-24s across repeated runs — genuine
+variance from two third-party services, not a regression, confirmed by
+timing `getCapAlerts` and `resolveWarningPlaces` separately); a simulated
+restart (same SQLite file, new process) with a prior persisted row responded
+in 0.14s; the persisted row's `updated_at` timestamp was confirmed to
+advance on its own shortly after, proving the background refresh actually
+ran and replaced it; 5 concurrent requests fired immediately after a restart
+all returned in under 0.1s with only one refresh observed, not five.
+
