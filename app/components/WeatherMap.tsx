@@ -2,8 +2,11 @@
 
 import "leaflet/dist/leaflet.css";
 import type L from "leaflet";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { Strike } from "../../lib/lightning.ts";
+import { nearestStation } from "../../lib/radarStations.ts";
 import type { WarningArea } from "../../lib/warningAreas.ts";
+import LayersPanel, { type LayerToggles } from "./LayersPanel.tsx";
 
 export interface WeatherMapProps {
   lat: number;
@@ -145,6 +148,55 @@ function warningPopupHtml(warning: WarningArea, placeName: string): string {
       Approximate area near ${escapeHtml(placeName)} — not an official BOM boundary.
     </span>
   `;
+}
+
+// A neutral blue-gray, distinct from both the amber community-report
+// convention and the severity-colored (yellow->red) warning circles — these
+// are purely informational, not a hazard indicator.
+const INFO_CIRCLE_OPTIONS: L.CircleMarkerOptions = {
+  color: "#3b82c4",
+  weight: 1,
+  fillColor: "#3b82c4",
+  fillOpacity: 0.05,
+  dashArray: "4 4",
+};
+
+// Arbitrary, round distances giving a quick sense of scale around the
+// selected location — not tied to any data source.
+const RING_RADII_KM = [50, 100, 150];
+
+// BOM's own public convention for radar range: ~100km is "generally
+// reliable", ~150-200km is the general limit of useful coverage before
+// earth curvature and beam spreading make returns unreliable. 150km is a
+// reasonable single default (this app's station list doesn't track radar
+// type/band, so there's no finer-grained figure to use per station).
+const COVERAGE_RADIUS_KM = 150;
+
+// A lightning-bolt glyph plus a ring that expands and fades via the SVG's
+// own <animate> — no CSS keyframes file, nothing beyond what a divIcon +
+// inline SVG already support elsewhere in this file (TRASH_ICON_SVG et al).
+// The ring plays once over ~700ms and then is simply gone (animate doesn't
+// loop); the bolt fades in and stays static. This only looks right if a
+// strike's marker is created once and left alone afterward — see
+// renderLightning's diffing against lightningMarkersRef for why.
+function lightningIcon(Leaflet: typeof L): L.DivIcon {
+  return Leaflet.divIcon({
+    className: "",
+    html: `
+      <svg width="28" height="28" viewBox="-14 -14 28 28" style="overflow: visible;">
+        <circle r="2" fill="none" stroke="#f1c40f" stroke-width="2">
+          <animate attributeName="r" from="2" to="12" dur="0.7s" fill="freeze" />
+          <animate attributeName="opacity" from="0.8" to="0" dur="0.7s" fill="freeze" />
+        </circle>
+        <path d="M-2 -8 L-5 1 L-1 1 L2 8 L5 -1 L1 -1 Z" fill="#f1c40f" stroke="#8a6d0a" stroke-width="1"
+          opacity="0">
+          <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" />
+        </path>
+      </svg>
+    `,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
 }
 
 // Inline, not an icon-font/library dependency — matches the rest of the
@@ -341,6 +393,7 @@ type ReportPopupElement = HTMLElement & {
 export default function WeatherMap({ lat, lon }: WeatherMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const leafletRef = useRef<typeof L | null>(null);
   const radarLayerRef = useRef<L.TileLayer | null>(null);
   // Every report seen so far (seed fetch + SSE), regardless of whether it's
   // currently inside the visible map — the source of truth for re-filtering
@@ -349,6 +402,22 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
   // Only the reports currently rendered as markers (a subset of the above,
   // filtered to the map's current bounds).
   const reportMarkersRef = useRef<Map<string, L.Marker>>(new Map());
+
+  // Refs alone don't retrigger effects, so these two flip to true once the
+  // map (synchronously) and the radar tile layer (after its own await) are
+  // actually ready for the toggle effects below to touch.
+  const [mapReady, setMapReady] = useState(false);
+  const [radarLoaded, setRadarLoaded] = useState(false);
+  const [toggles, setToggles] = useState<LayerToggles>({
+    radar: true,
+    rings: false,
+    coverage: false,
+    lightning: false,
+  });
+  // Diffed against each poll's response, keyed by a derived id (strikes
+  // carry none of their own) — see lightningIcon's comment for why this
+  // can't be a clear-and-redraw like the rings/coverage circles.
+  const lightningMarkersRef = useRef<Map<string, L.Marker>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
@@ -539,9 +608,15 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
         openDraftPopup(L, map, e.latlng.lat, e.latlng.lng);
       });
 
+      leafletRef.current = L;
+      setMapReady(true);
+
       const res = await fetch("/api/radar");
       if (cancelled || !res.ok) return;
       const { tileUrlTemplate } = (await res.json()) as { tileUrlTemplate: string };
+      // Not .addTo(map) here — attachment is driven entirely by the radar
+      // toggle effect below, which also covers the default-on case once
+      // radarLoaded flips true.
       radarLayerRef.current = L.tileLayer(tileUrlTemplate, {
         opacity: 0.6,
         attribution: "Radar © RainViewer",
@@ -553,7 +628,8 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
         // higher zoom levels instead, which is the standard way to overlay a
         // lower-resolution source on a map that zooms further.
         maxNativeZoom: 7,
-      }).addTo(map);
+      });
+      setRadarLoaded(true);
 
       const seedRes = await fetch("/api/reports");
       if (!cancelled && seedRes.ok) {
@@ -657,5 +733,103 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
     mapRef.current?.setView([lat, lon]);
   }, [lat, lon]);
 
-  return <div ref={containerRef} style={{ height: "60vh", width: "100%" }} />;
+  // Radar: toggles the already-constructed radarLayerRef on/off, rather
+  // than constructing/destroying a new tile layer each time (which would
+  // re-fetch every visible tile on every toggle).
+  useEffect(() => {
+    const map = mapRef.current;
+    const layer = radarLayerRef.current;
+    if (!map || !layer) return;
+    if (toggles.radar) layer.addTo(map);
+    else map.removeLayer(layer);
+  }, [toggles.radar, radarLoaded]);
+
+  // Rings: concentric circles around the selected location, purely
+  // client-side (no data source) — depends on [lat, lon] so it re-centers
+  // for free whenever the selected place changes, the same way the
+  // existing setView effect above does.
+  useEffect(() => {
+    const map = mapRef.current;
+    const Leaflet = leafletRef.current;
+    if (!map || !Leaflet || !mapReady || !toggles.rings) return;
+    const group = Leaflet.layerGroup(
+      RING_RADII_KM.map((km) => Leaflet.circle([lat, lon], { radius: km * 1000, ...INFO_CIRCLE_OPTIONS })),
+    ).addTo(map);
+    return () => {
+      group.remove();
+    };
+  }, [toggles.rings, mapReady, lat, lon]);
+
+  // Coverage: one circle around the nearest radar station's documented
+  // ~150km reliable range (see COVERAGE_RADIUS_KM's comment).
+  useEffect(() => {
+    const map = mapRef.current;
+    const Leaflet = leafletRef.current;
+    if (!map || !Leaflet || !mapReady || !toggles.coverage) return;
+    const station = nearestStation(lat, lon);
+    const circle = Leaflet.circle([station.lat, station.lon], {
+      radius: COVERAGE_RADIUS_KM * 1000,
+      ...INFO_CIRCLE_OPTIONS,
+    })
+      .addTo(map)
+      .bindPopup(`Approximate radar coverage — ${escapeHtml(station.name)}`);
+    return () => {
+      circle.remove();
+    };
+  }, [toggles.coverage, mapReady, lat, lon]);
+
+  // Lightning: polls the server-buffered strike list (lib/lightning.ts) and
+  // diffs against lightningMarkersRef so a strike's pulse-in animation
+  // plays once, on arrival, rather than replaying every poll.
+  useEffect(() => {
+    const map = mapRef.current;
+    const Leaflet = leafletRef.current;
+    if (!map || !Leaflet || !mapReady || !toggles.lightning) return;
+
+    const group = Leaflet.layerGroup().addTo(map);
+    let cancelled = false;
+
+    const poll = async (): Promise<void> => {
+      const res = await fetch("/api/lightning");
+      if (cancelled || !res.ok) return;
+      const strikes = (await res.json()) as Strike[];
+      const seenKeys = new Set<string>();
+      for (const s of strikes) {
+        const key = `${s.time}:${s.lat}:${s.lon}`;
+        seenKeys.add(key);
+        if (lightningMarkersRef.current.has(key)) continue;
+        const marker = Leaflet.marker([s.lat, s.lon], { icon: lightningIcon(Leaflet), interactive: false }).addTo(
+          group,
+        );
+        lightningMarkersRef.current.set(key, marker);
+      }
+      for (const [key, marker] of lightningMarkersRef.current) {
+        if (!seenKeys.has(key)) {
+          marker.remove();
+          lightningMarkersRef.current.delete(key);
+        }
+      }
+    };
+
+    void poll().catch(() => {
+      // A relay with no SLA will sometimes be unreachable; the layer just
+      // shows whatever's already on the map (possibly nothing) rather than
+      // erroring, same as a failed warning-areas/radar fetch degrades today.
+    });
+    const interval = setInterval(() => void poll().catch(() => {}), 20_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      lightningMarkersRef.current.clear();
+      group.remove();
+    };
+  }, [toggles.lightning, mapReady]);
+
+  return (
+    <>
+      <LayersPanel toggles={toggles} onChange={setToggles} />
+      <div ref={containerRef} style={{ height: "60vh", width: "100%" }} />
+    </>
+  );
 }

@@ -491,3 +491,108 @@ coherent tint instead of a mismatched outline/fill; `fillOpacity` (still
 0.15, unchanged) does the work of keeping the fill light over the map
 tiles, rather than a second, paler color doing it. Verified live: stroke
 and fill now match exactly on all 137 currently-live circles.
+
+## Final project: unified "Layers" panel (radar, rings, coverage, lightning)
+
+The 4th item on the original Final Project list: put every map layer behind
+one toggle panel. Before this, radar was the only thing that behaved like a
+layer (always on, no toggle); rings, coverage, and lightning didn't exist.
+"Place names" — the 5th item on the original list — was explicitly dropped
+by the user for this pass.
+
+Rings and coverage needed no new data source: rings are concentric
+`L.circle`s around the selected location (50/100/150km, arbitrary round
+numbers for a sense of scale), and coverage is one circle around the
+nearest radar station (`nearestStation`, `lib/radarStations.ts`) at BOM's
+own public "~150km generally reliable" radar-range convention — not scraped
+data, no new flakiness, same `L.circle` pattern the warning circles already
+established.
+
+Lightning looked like a dead end at first (Blitzortung.org, the only real
+community lightning network with Australia coverage, has no public API),
+but a second, deeper research pass found a legitimate path: a public MQTT
+relay at `blitzortung.ha.sed.pl:1883` (no TLS, no auth, no key), run
+specifically because Blitzortung's own usage policy requires third parties
+to go through a relay like this rather than hit Blitzortung's own servers —
+it's the same backend the actively-maintained Home Assistant Blitzortung
+integration uses. Confirmed live: subscribing to the Australia/Oceania
+geohash-prefix topics (`blitzortung/1.1/q/#`, `blitzortung/1.1/r/#`)
+returned real AU strikes within 25s. Same risk category this app already
+accepts for BOM's own flaky, reverse-engineered API — free and real, but
+unofficial, on a community relay with no SLA.
+
+**Architecture:** `lib/lightning.ts` holds a lazy MQTT singleton, mirroring
+`lib/db.ts`'s `getDb()` pattern exactly — the connection is never opened at
+module load, only from inside `getRecentStrikes()`, so `next build`'s
+import-only page-data-collection pass never touches the network (the same
+class of problem already fixed once for SQLite's build-time race). Recent
+strikes are buffered in memory (capped at 30 minutes / 500 entries) and also
+persisted to a new `lightning_cache` SQLite table, same shape as
+`warning_areas_cache`, so a fresh server start (Fly's machine stops and
+restarts on inactivity) serves the last known strikes immediately instead
+of an empty layer while the new MQTT subscription reconnects in the
+background. The client polls `/api/lightning` every 20s rather than using a
+second SSE connection per visitor — strikes are bursty/infrequent per area,
+so sub-second latency isn't needed, and polling avoids stacking a second
+long-lived per-client connection on top of the already-persistent
+server-side MQTT link on a single 256MB machine.
+
+**Lightning marker (user-requested, not in the first draft):** the user
+asked for a brief pulse/highlight with a lightning-bolt icon rather than a
+plain dot. This needed diffing, not clear-and-redraw: without a stable key
+per strike, every 20s poll would recreate every marker and the "pulse once"
+animation would replay every poll, looking like constant flashing instead
+of a one-time highlight on arrival. Strikes carry no id from Blitzortung, so
+one is derived from `${time}:${lat}:${lon}` and used as a new
+`lightningMarkersRef: Map<string, L.Marker>` key — the same pattern
+`reportMarkersRef` already uses for community reports, keyed differently
+since strikes have no server-assigned id. The icon itself is an inline SVG
+`divIcon` (same convention as `TRASH_ICON_SVG`/`locationIcon`/`reportIcon` —
+no icon-font, no new frontend dependency): a bolt plus a ring that expands
+and fades via the SVG's own `<animate>`, playing once over ~700ms when the
+marker is first created.
+
+**Toggle mechanism:** given the component's existing reliance on refs and
+one big mount effect, toggles are four small, independent `useEffect`s
+(radar/rings/coverage/lightning), each keyed on its own toggle boolean plus
+a couple of new readiness flags (`mapReady`, `radarLoaded`) — refs alone
+don't retrigger effects, so these two `useState`s exist purely to give the
+toggle effects something real to depend on. This mirrors the existing
+`useEffect(() => mapRef.current?.setView([lat, lon]), [lat, lon])` pattern
+of small, focused effects rather than cramming more into the one big mount
+effect. The panel itself (`LayersPanel.tsx`) is a plain block rendered above
+the map, not an overlay on the map canvas — this app has already hit real
+click/z-index fragility stacking its own DOM on top of Leaflet's panes (see
+the popup event-propagation comments above), so a toggle panel avoids that
+entirely by sitting outside the map in normal page flow.
+
+**Deploy risk found and fixed before it could bite in production:** Next's
+standalone output tracing (what the Dockerfile actually ships) silently
+dropped `mqtt` — confirmed by inspecting `.next/standalone/node_modules`
+after a real build, which never contained it despite `mqtt.connect()` being
+a real runtime call. The first fix attempted (copying
+`node_modules/mqtt` into the Dockerfile explicitly, the same way
+`better-sqlite3`'s native binding already is) turned out to be wrong: unlike
+`better-sqlite3`, `mqtt` has a real dependency tree (`ws`, `mqtt-packet`,
+etc.) laid out as pnpm's nested symlinks, so copying just the top-level
+package directory left dangling symlinks and a live `Cannot find module
+'mqtt-packet'` error on require — confirmed by actually running it in an
+isolated copy, not just trusting it should work. The real fix is
+`serverExternalPackages: ["mqtt"]` in `next.config.ts`, which tells the
+tracer to copy the whole resolved package tree (not just the top-level
+symlink) into standalone's output. Verified by rebuilding, then testing in
+a fully isolated copy outside the project tree (`rsync -a`, preserving
+symlinks the way Docker's `COPY` does) with no Docker available in this
+sandbox: the server booted cleanly and a live request returned real strikes.
+
+**Verified:** typecheck/build; the standalone-output/mqtt-tracing fix above,
+tested in isolation rather than assumed; a live Playwright run confirming
+each toggle's exact effect (radar off/on changes the tile-layer count by
+exactly 1, rings-on adds exactly 3 circle paths, coverage-on adds exactly 1
+more, rings-off removes exactly 3) and confirming real lightning strikes
+render with the bolt-and-pulse icon, accumulating correctly across two poll
+cycles (not resetting); a simulated restart (killed and restarted the dev
+server, same SQLite file) returning persisted strikes on the very first
+request rather than an empty array; full spec suite green, including a new
+basic check that `GET /api/lightning` always responds with a JSON array
+regardless of whether the MQTT connection has actually connected yet.

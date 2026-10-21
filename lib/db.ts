@@ -104,6 +104,20 @@ function getDb(): Database.Database {
     )
   `);
 
+  // Last known lightning-strike buffer (lib/lightning.ts), same shape and
+  // reasoning as warning_areas_cache: a fresh server start (Fly's machine
+  // stops and restarts on inactivity) has no in-memory buffer yet, so this
+  // lets a request right after a restart see the last known strikes
+  // immediately instead of an empty layer while the MQTT subscription
+  // reconnects in the background.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS lightning_cache (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      data TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
   dbInstance = db;
   return db;
 }
@@ -265,6 +279,26 @@ export function saveWarningAreasCache(data: unknown): void {
   getDb()
     .prepare(
       `INSERT INTO warning_areas_cache (id, data, updated_at)
+       VALUES (1, @data, @updatedAt)
+       ON CONFLICT(id) DO UPDATE SET
+         data = excluded.data,
+         updated_at = excluded.updated_at`,
+    )
+    .run({ data: JSON.stringify(data), updatedAt: new Date().toISOString() });
+}
+
+export function getCachedLightning(): { data: unknown; updatedAt: string } | undefined {
+  const row = getDb().prepare(`SELECT data, updated_at AS updatedAt FROM lightning_cache WHERE id = 1`).get() as
+    | { data: string; updatedAt: string }
+    | undefined;
+  if (!row) return undefined;
+  return { data: JSON.parse(row.data) as unknown, updatedAt: row.updatedAt };
+}
+
+export function saveLightningCache(data: unknown): void {
+  getDb()
+    .prepare(
+      `INSERT INTO lightning_cache (id, data, updated_at)
        VALUES (1, @data, @updatedAt)
        ON CONFLICT(id) DO UPDATE SET
          data = excluded.data,
