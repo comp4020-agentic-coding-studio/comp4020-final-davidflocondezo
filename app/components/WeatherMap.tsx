@@ -111,24 +111,31 @@ const WARNING_RADIUS_METERS = 25_000;
 // gap in BOM's data, not a signal the warning is actually low-severity, so
 // it gets the same middle-ground look as before rather than being treated
 // as mild.
-const SEVERITY_COLORS: Record<string, { color: string; fillColor: string }> = {
-  Extreme: { color: "#7b241c", fillColor: "#c0392b" },
-  Severe: { color: "#c0392b", fillColor: "#e67e22" },
-  Moderate: { color: "#d68910", fillColor: "#f1c40f" },
-  Minor: { color: "#9a7d0a", fillColor: "#f4d03f" },
+//
+// One saturated color per tier, used for both stroke and fill — at the low
+// fillOpacity below, a lighter fill color (the first version of this) read
+// as a different hue from its own outline rather than a lighter tint of it;
+// using the same hex for both keeps the circle looking like one coherent
+// color at a glance, with fillOpacity (not a second, paler color) doing the
+// work of keeping the fill unobtrusive over the map tiles.
+const SEVERITY_COLORS: Record<string, string> = {
+  Extreme: "#7b241c",
+  Severe: "#c0392b",
+  Moderate: "#d68910",
+  Minor: "#9a7d0a",
 };
-const DEFAULT_SEVERITY_COLORS = { color: "#c0392b", fillColor: "#e67e22" };
+const DEFAULT_SEVERITY_COLOR = "#c0392b";
 
 function warningCircleOptions(severity: string): L.CircleMarkerOptions {
-  const { color, fillColor } = SEVERITY_COLORS[severity] ?? DEFAULT_SEVERITY_COLORS;
+  const color = SEVERITY_COLORS[severity] ?? DEFAULT_SEVERITY_COLOR;
   // Amber is already the community-report convention (crit 9's documented
   // decision) for "unverified, person-reported" — none of the severity
   // tiers above use it, so a warning circle is never mistaken for one.
-  return { color, weight: 2, fillColor, fillOpacity: 0.15 };
+  return { color, weight: 2, fillColor: color, fillOpacity: 0.15 };
 }
 
 function warningPopupHtml(warning: WarningArea, placeName: string): string {
-  const { color } = SEVERITY_COLORS[warning.severity] ?? DEFAULT_SEVERITY_COLORS;
+  const color = SEVERITY_COLORS[warning.severity] ?? DEFAULT_SEVERITY_COLOR;
   return `
     <strong>${escapeHtml(warning.headline)}</strong><br/>
     <span style="color: ${color}; font-weight: bold;">${escapeHtml(warning.severity)} severity</span><br/>

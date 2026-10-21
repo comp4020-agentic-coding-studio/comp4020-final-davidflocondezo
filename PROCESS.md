@@ -479,3 +479,15 @@ producing `Cannot find module './908.js'` and zero circles rendering.
 Caught it from the dev log rather than guessing, killed the stale process,
 and restarted cleanly — the rule earned its place in `CLAUDE.md` by catching
 a real second occurrence, not just a hypothetical one.
+
+**Follow-up:** the user asked whether the outline was the only thing
+actually changing color, since at `fillOpacity: 0.15` the original design's
+separate, lighter fill color per tier (`fillColor`, one shade lighter than
+`color`) read as visually indistinguishable from the outline at a glance —
+confirmed live (same Playwright method) that both were technically present
+in the SVG but didn't read as the same color. Switched to one color per
+tier used for both `color` and `fillColor`, so the circle reads as a single
+coherent tint instead of a mismatched outline/fill; `fillOpacity` (still
+0.15, unchanged) does the work of keeping the fill light over the map
+tiles, rather than a second, paler color doing it. Verified live: stroke
+and fill now match exactly on all 137 currently-live circles.
