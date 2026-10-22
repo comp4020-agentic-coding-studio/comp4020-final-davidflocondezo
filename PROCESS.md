@@ -622,3 +622,36 @@ app and confirmed the real on-page markers carry the same SVG with
 isolated test) and are `display: block` / `opacity: 1`; confirmed 2 `<path>`
 elements (halo + bolt) render per live strike, matching the design, and that
 the marker count tracks the live `/api/lightning` response.
+
+## "Use my location" button
+
+Geolocation was previously requested only once, automatically, on page
+load (`app/page.tsx`) — if a visitor denied it then, or the browser's own
+prompt timed out, there was no way back to it short of reloading the page
+and hoping. The user asked for a button to re-trigger it on demand.
+
+The existing load-time geolocation call and the new button share one
+`requestLocation` function rather than duplicating the
+`getCurrentPosition`/`selectPlace` logic. The one real behavioral
+difference is a `silent` flag: the initial page load passes `true` (an
+unprompted denial on first visit isn't something the visitor did anything
+about, so it falls through to the trace/default chain quietly), while the
+button passes `false` (a visitor who clicked a location button and got
+denied should actually be told why, not see nothing happen).
+
+**A hard browser limitation, not a bug:** once a site's geolocation
+permission is denied, Chrome/Firefox/Safari all suppress their own
+permission prompt on every later call from that page — there's no API to
+force it back open. The button can detect `PERMISSION_DENIED`
+(`GeolocationPositionError.code`) and tell the visitor to re-allow it in
+their browser's own site settings, but it cannot itself make the browser
+ask again. This is stated directly in the error message rather than
+leaving the visitor to guess why clicking the button appears to do nothing.
+
+**Verified** with Playwright using two separate browser contexts: one with
+geolocation granted (a mocked Melbourne coordinate) confirmed the button
+click updates the URL to `?place=<geohash>` for the new location; one with
+geolocation explicitly unset (`context.setGeolocation(null)`, `permissions: []`)
+confirmed the click surfaces the "blocked for this site" message in red
+text, with the previously-loaded place staying on screen rather than the
+page breaking or going blank.

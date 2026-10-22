@@ -51,6 +51,47 @@ function Home() {
     observations?: { data?: WeatherObservation };
     warnings?: { data?: { title: string }[] };
   } | null>(null);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  // Shared by the initial load (below) and the "Use my location" button —
+  // same success path, same geohash/name shape. A browser that already
+  // denied the permission once won't re-show its own prompt on a later call
+  // (Chrome/Firefox/Safari all suppress it); this can only report that back
+  // to the visitor, not force the browser to ask again. `silent` skips
+  // setting an error message: the initial page load shouldn't greet a
+  // visitor with an error before they've clicked anything, only the button
+  // (a deliberate action) should surface one.
+  function requestLocation(onDenied: () => void, silent: boolean): void {
+    if (!("geolocation" in navigator)) {
+      if (!silent) setLocationError("Location isn't available in this browser.");
+      onDenied();
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocationError(null);
+        const { latitude: lat, longitude: lon } = pos.coords;
+        selectPlace({
+          geohash: ngeohash.encode(lat, lon, 6),
+          name: "Your location",
+          state: "",
+          lat,
+          lon,
+        });
+      },
+      (err) => {
+        if (!silent) {
+          setLocationError(
+            err.code === err.PERMISSION_DENIED
+              ? "Location access is blocked for this site — allow it in your browser's site settings, then try again."
+              : "Couldn't get your location — try again.",
+          );
+        }
+        onDenied();
+      },
+      { timeout: 8000 },
+    );
+  }
 
   // Load priority: the URL's ?place= (a bookmarked/shared link should always
   // show what it promised, regardless of where the visitor actually is or
@@ -63,25 +104,7 @@ function Home() {
       return;
     }
 
-    if (!("geolocation" in navigator)) {
-      void loadTraceOrDefault();
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const { latitude: lat, longitude: lon } = pos.coords;
-        selectPlace({
-          geohash: ngeohash.encode(lat, lon, 6),
-          name: "Your location",
-          state: "",
-          lat,
-          lon,
-        });
-      },
-      () => void loadTraceOrDefault(),
-      { timeout: 8000 },
-    );
+    requestLocation(() => void loadTraceOrDefault(), true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -122,6 +145,12 @@ function Home() {
     <main style={{ padding: "1rem", maxWidth: "960px", margin: "0 auto" }}>
       <h1>Weather &amp; rain radar</h1>
       <LocationSearch onSelect={selectPlace} />
+      <p>
+        <button type="button" onClick={() => requestLocation(() => {}, false)} style={{ padding: "0.5rem 1rem" }}>
+          Use my location
+        </button>
+      </p>
+      {locationError && <p style={{ color: "crimson" }}>{locationError}</p>}
 
       {place && station && (
         <>
