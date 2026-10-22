@@ -731,3 +731,42 @@ visually confirmed in a screenshot that the arrow is genuinely rotated
 calm-wind color; full spec suite green, unaffected (client-rendering plus
 a new simple GET route, same as the other non-lightning layers have no
 dedicated spec coverage).
+
+**Follow-up — too few arrows:** the user compared against BOM's own "Rain
+radar and weather maps" page's wind tab, which shows noticeably more
+arrows. The original design only queried the 8 `RADAR_STATIONS` — a list
+that existed for a different purpose (nearest-radar labeling) and was
+never meant to represent wind-station density. Replaced that with a fixed
+grid of points spread across the Australian mainland and Tasmania (3
+degrees of lat/lon spacing), letting BOM's observations endpoint resolve
+each grid point to its nearest real station the same way it already did
+for the 8 radar stations — confirmed live before committing to this
+design: a 168-point grid resolved to 61 distinct real, named stations
+(Batchelor, Bulman, Gove Airport, Kalgoorlie-Boulder, etc.) with live wind
+data, with zero request failures even at concurrency 15.
+
+Asked the user to confirm the grid size (this density vs. a smaller,
+cheaper grid) and whether duplicate stations should be deduplicated, since
+a denser grid means two nearby points can resolve to the same real
+station; both confirmed. Dedup keys on BOM's own `station.bom_id` (not
+name, which could collide) and, among duplicates, keeps whichever grid
+point BOM itself reports as closer to the real station (`station.distance`)
+— the grid point's own coordinates are what gets plotted, since BOM's
+response never includes the station's actual lat/lon, so picking the
+closer-reported point is the best available approximation of where it
+really sits.
+
+Concurrency (15, same restraint `lib/capWarnings.ts`/`lib/warningPlaces.ts`
+already apply to this same flaky, reverse-engineered API) keeps the ~168
+requests a cache-miss now needs from hammering BOM harder than the
+previous 8. Still wrapped in the same 10-minute `cached()` TTL, so a
+cache-miss (the only case all 168 requests actually fire) costs ~9s in
+practice, confirmed live, while every request inside that window is
+near-instant.
+
+**Verified:** typecheck/build; live `curl` confirming 56-59 distinct
+stations (varies run to run with which grid points fall nearest a live
+station) on a cold fetch, instant response on a cached one; Playwright
+confirming the marker count jumped from 8 to ~59 and that arrows now
+spread noticeably across the visible map rather than clustering on only
+the old radar-station locations; full spec suite green.
