@@ -596,3 +596,29 @@ server, same SQLite file) returning persisted strikes on the very first
 request rather than an empty array; full spec suite green, including a new
 basic check that `GET /api/lightning` always responds with a JSON array
 regardless of whether the MQTT connection has actually connected yet.
+
+**Follow-up — the icon wasn't actually noticeable:** with only one live
+strike in the API response, the user went looking for it on the map and
+initially thought nothing was rendering — the strike was there, but the
+original icon (a thin yellow bolt outline, pulse ring fading out once over
+700ms and settling to a small static shape) didn't contrast enough against
+the map's own light tan/green/blue tiles, especially once the one-shot pulse
+had already finished by the time anyone looked. Fixed two ways: the ring
+animation now loops continuously (`repeatCount="indefinite"` on both
+`<animate>`s) instead of playing once and stopping, so a strike stays easy
+to spot for as long as it's on the map rather than fading into a small
+static dot; and the bolt itself gained a thick white halo stroke behind a
+bright, more saturated yellow fill with a dark outline, plus the pulse ring
+moved to a distinct saturated orange (`#ff9100`, not reused anywhere else on
+the map) — together giving the icon real contrast against every tile color
+the map actually uses, not just the yellow-on-pale-green case that happened
+to look fine in the original design.
+
+Verified the new icon in isolation (a standalone HTML render, screenshotted
+mid-pulse and settled) against both a pale-green and pale-tan background,
+confirming it reads clearly in both; inspected the live DOM on the running
+app and confirmed the real on-page markers carry the same SVG with
+`repeatCount="indefinite"` actually present (not just correct in the
+isolated test) and are `display: block` / `opacity: 1`; confirmed 2 `<path>`
+elements (halo + bolt) render per live strike, matching the design, and that
+the marker count tracks the live `/api/lightning` response.

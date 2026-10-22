@@ -172,30 +172,36 @@ const RING_RADII_KM = [50, 100, 150];
 // type/band, so there's no finer-grained figure to use per station).
 const COVERAGE_RADIUS_KM = 150;
 
-// A lightning-bolt glyph plus a ring that expands and fades via the SVG's
-// own <animate> — no CSS keyframes file, nothing beyond what a divIcon +
-// inline SVG already support elsewhere in this file (TRASH_ICON_SVG et al).
-// The ring plays once over ~700ms and then is simply gone (animate doesn't
-// loop); the bolt fades in and stays static. This only looks right if a
-// strike's marker is created once and left alone afterward — see
-// renderLightning's diffing against lightningMarkersRef for why.
+// A lightning-bolt glyph plus a ring that pulses continuously via the SVG's
+// own <animate repeatCount="indefinite">, not CSS keyframes — nothing beyond
+// what a divIcon + inline SVG already support elsewhere in this file
+// (TRASH_ICON_SVG et al). The loop keeps running for as long as the marker
+// stays on the map (i.e. until the strike ages out of the server's buffer),
+// so a strike stays easy to spot rather than settling into a small static
+// dot that blends into whatever map tile color sits underneath it —
+// reported live: a single real strike was in the API response but not
+// visually noticeable once its one-shot pulse had already finished.
+//
+// A white halo stroke sits behind the bolt and the ring's own color
+// (#ff9100, a saturated orange not reused anywhere else on the map — ring
+// colors elsewhere are red/amber-severity or blue-gray-info) so the icon
+// reads clearly against light tan/green/blue map tiles alike, rather than
+// relying on the bolt's own yellow fill for contrast.
 function lightningIcon(Leaflet: typeof L): L.DivIcon {
   return Leaflet.divIcon({
     className: "",
     html: `
-      <svg width="28" height="28" viewBox="-14 -14 28 28" style="overflow: visible;">
-        <circle r="2" fill="none" stroke="#f1c40f" stroke-width="2">
-          <animate attributeName="r" from="2" to="12" dur="0.7s" fill="freeze" />
-          <animate attributeName="opacity" from="0.8" to="0" dur="0.7s" fill="freeze" />
+      <svg width="32" height="32" viewBox="-16 -16 32 32" style="overflow: visible;">
+        <circle r="5" fill="none" stroke="#ff9100" stroke-width="3">
+          <animate attributeName="r" values="5;15;5" dur="1.2s" repeatCount="indefinite" />
+          <animate attributeName="opacity" values="1;0;1" dur="1.2s" repeatCount="indefinite" />
         </circle>
-        <path d="M-2 -8 L-5 1 L-1 1 L2 8 L5 -1 L1 -1 Z" fill="#f1c40f" stroke="#8a6d0a" stroke-width="1"
-          opacity="0">
-          <animate attributeName="opacity" from="0" to="1" dur="0.3s" fill="freeze" />
-        </path>
+        <path d="M-2 -8 L-5 1 L-1 1 L2 8 L5 -1 L1 -1 Z" fill="none" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" />
+        <path d="M-2 -8 L-5 1 L-1 1 L2 8 L5 -1 L1 -1 Z" fill="#ffd400" stroke="#1a1a1a" stroke-width="1.5" stroke-linejoin="round" />
       </svg>
     `,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
   });
 }
 
@@ -416,7 +422,8 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
   });
   // Diffed against each poll's response, keyed by a derived id (strikes
   // carry none of their own) — see lightningIcon's comment for why this
-  // can't be a clear-and-redraw like the rings/coverage circles.
+  // can't be a clear-and-redraw like the rings/coverage circles (it would
+  // restart each marker's continuous pulse animation every poll).
   const lightningMarkersRef = useRef<Map<string, L.Marker>>(new Map());
 
   useEffect(() => {
@@ -779,8 +786,11 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
   }, [toggles.coverage, mapReady, lat, lon]);
 
   // Lightning: polls the server-buffered strike list (lib/lightning.ts) and
-  // diffs against lightningMarkersRef so a strike's pulse-in animation
-  // plays once, on arrival, rather than replaying every poll.
+  // diffs against lightningMarkersRef, rather than clearing and redrawing
+  // every poll, so an already-shown strike's marker (and its continuously
+  // looping pulse animation) isn't needlessly torn down and recreated every
+  // 20s — only strikes that are genuinely new or have aged out of the
+  // server's buffer are added/removed.
   useEffect(() => {
     const map = mapRef.current;
     const Leaflet = leafletRef.current;
