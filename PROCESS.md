@@ -770,3 +770,21 @@ station) on a cold fetch, instant response on a cached one; Playwright
 confirming the marker count jumped from 8 to ~59 and that arrows now
 spread noticeably across the visible map rather than clustering on only
 the old radar-station locations; full spec suite green.
+
+**Follow-up — icon style:** the user asked for the arrows to look like
+BOM's own wind layer on their "Rain radar and weather maps" page, which I
+couldn't load directly (blocks automated fetches) — asked the user
+directly rather than guessing, and confirmed it's a thin, unfilled line
+with a small open chevron arrowhead, not a solid filled triangle (the
+original design). Replaced the single filled `<path>` triangle with a
+`<line>` stem plus an open, fill-none chevron `<path>`, both stroked in the
+same speed-based color as before (`windColor`'s yellow→orange→red/blue
+scale, unchanged) — only the shape changed, not the color logic or the
+rotation-by-compass-direction logic.
+
+Verified by rendering the new icon in isolation at 3 different rotations
+first (confirming the chevron and stem both rotate together as one unit,
+not independently), then inspecting the live DOM on the running app to
+confirm the real markers use the new `<line>`/open-`<path>` markup (not
+just the isolated test), and a cropped screenshot confirming the rendered
+result reads clearly as a thin arrow, not a solid shape.

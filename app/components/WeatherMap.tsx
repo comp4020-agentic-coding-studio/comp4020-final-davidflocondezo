@@ -240,10 +240,12 @@ function windColor(speedKmh: number): string {
   return "#2e86c1";
 }
 
-// A simple arrow divIcon (same convention as lightningIcon/locationIcon),
-// rotated to the wind's compass direction and colored by speed. Points in
-// the direction the wind is blowing *from*, matching BOM's own convention
-// (the `direction` field is already "from", e.g. "wind from the east").
+// A thin stem + open chevron arrowhead (stroke only, no fill) — matching
+// the style of BOM's own wind layer on their "Rain radar and weather maps"
+// page (a simple line-and-chevron, not a solid filled triangle), rotated to
+// the wind's compass direction and colored by speed. Points in the
+// direction the wind is blowing *from*, matching BOM's own convention (the
+// `direction` field is already "from", e.g. "wind from the east").
 function windArrowIcon(Leaflet: typeof L, speedKmh: number, direction: string): L.DivIcon {
   const degrees = COMPASS_TO_DEGREES[direction] ?? 0;
   const color = windColor(speedKmh);
@@ -251,7 +253,8 @@ function windArrowIcon(Leaflet: typeof L, speedKmh: number, direction: string): 
     className: "",
     html: `
       <svg width="24" height="24" viewBox="-12 -12 24 24" style="overflow: visible; transform: rotate(${degrees}deg);">
-        <path d="M0 -9 L5 4 L0 1 L-5 4 Z" fill="${color}" stroke="#1a1a1a" stroke-width="1" stroke-linejoin="round" />
+        <line x1="0" y1="9" x2="0" y2="-7" stroke="${color}" stroke-width="2" stroke-linecap="round" />
+        <path d="M-4 -3 L0 -9 L4 -3" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
     `,
     iconSize: [24, 24],
