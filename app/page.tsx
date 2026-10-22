@@ -81,11 +81,23 @@ function Home() {
       },
       (err) => {
         if (!silent) {
-          setLocationError(
-            err.code === err.PERMISSION_DENIED
-              ? "Location access is blocked for this site — allow it in your browser's site settings, then try again."
-              : "Couldn't get your location — try again.",
-          );
+          // The 3 GeolocationPositionError codes need separate messages:
+          // PERMISSION_DENIED is a site-level block (fixed in the browser's
+          // own site settings); POSITION_UNAVAILABLE is almost always the
+          // OS's location service itself being off, or off for this browser
+          // specifically (fixed in the OS's system settings, not the
+          // browser) — collapsing these into one generic message left no
+          // way to tell which one actually applied.
+          let message: string;
+          if (err.code === err.PERMISSION_DENIED) {
+            message = "Location access is blocked for this site — allow it in your browser's site settings, then try again.";
+          } else if (err.code === err.POSITION_UNAVAILABLE) {
+            message =
+              "Your device couldn't determine your location — check that Location Services is turned on for this browser in your system settings.";
+          } else {
+            message = "Getting your location timed out — check your connection and try again.";
+          }
+          setLocationError(message);
         }
         onDenied();
       },

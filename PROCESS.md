@@ -655,3 +655,22 @@ geolocation explicitly unset (`context.setGeolocation(null)`, `permissions: []`)
 confirmed the click surfaces the "blocked for this site" message in red
 text, with the previously-loaded place staying on screen rather than the
 page breaking or going blank.
+
+**Follow-up — the error message wasn't specific enough:** the user hit
+"Couldn't get your location — try again" in Chrome on macOS, which turned
+out to be `POSITION_UNAVAILABLE` (macOS's own Location Services off, or off
+specifically for Chrome, in System Settings — a different, OS-level fix
+from the `PERMISSION_DENIED` site-settings case already handled). The
+original code collapsed both `POSITION_UNAVAILABLE` and `TIMEOUT` into one
+generic message, which gave no clue which of the two applied or where to
+go fix it. Split into 3 distinct messages, one per
+`GeolocationPositionError` code: `PERMISSION_DENIED` (unchanged, points at
+the browser's site settings), `POSITION_UNAVAILABLE` (now points at the
+OS's Location Services setting, the actual fix in this reported case), and
+`TIMEOUT` (points at the network/connection instead, since it's a different
+failure mode from either).
+
+Verified by stubbing `navigator.geolocation.getCurrentPosition` directly to
+fail with each of the 3 real error codes in turn (bypassing the OS/browser
+permission plumbing, which can't be scripted) and confirming each one
+rendered its own distinct message, not the same generic text.
