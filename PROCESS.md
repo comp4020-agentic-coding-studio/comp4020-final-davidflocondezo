@@ -674,3 +674,60 @@ Verified by stubbing `navigator.geolocation.getCurrentPosition` directly to
 fail with each of the 3 real error codes in turn (bypassing the OS/browser
 permission plumbing, which can't be scripted) and confirming each one
 rendered its own distinct message, not the same generic text.
+
+## Wind layer: speed + direction, multiple arrows across the map
+
+5th layer in the Layers panel. BOM's own observations endpoint (already
+used by `lib/bom.ts`'s `getWeather`, for the temperature/warnings shown
+under the map) carries wind speed and a 16-point compass direction on
+every response — confirmed live:
+`"wind": { "speed_kilometre": 24, "speed_knot": 13, "direction": "E" }`.
+No new third-party data source, no new dependency.
+
+Asked whether this should be one arrow at the selected location (reusing
+the weather fetch `app/page.tsx` already makes) or multiple arrows spread
+across the map; the user pointed at BOM's own "Rain radar and weather
+maps" page, whose Wind tab shows multiple arrows nationally. BOM's
+observations API is per-location, not a grid — but it resolves any geohash
+to its nearest real weather station internally, so feeding each of
+`lib/radarStations.ts`'s 8 existing `RADAR_STATIONS` geohashes into it
+returns 8 distinct real stations spread across the country (confirmed
+live: Terrey Hills, Laverton, Alexandra Hills, Mandurah, Edinburgh, Tasman
+Island, Knuckey Lagoon, Cooma Airport), reusing a list that already existed
+for "nearest radar" rather than needing a new station dataset.
+
+`lib/wind.ts` fetches all 8 in parallel (a fixed, small fan-out — no
+batching needed, unlike the ~220-alert warnings fetch) and skips any
+station with no current wind reading (confirmed live: this does happen)
+rather than showing it as 0 km/h, which would misrepresent "no data" as
+"calm." Cached via the same `cached()` helper `lib/bom.ts` already
+exports, 10-minute TTL matching `getWeather`'s own TTL for the same
+underlying data.
+
+Each arrow is a rotated divIcon (same inline-SVG convention as
+`lightningIcon`/`locationIcon`), rotated via `COMPASS_TO_DEGREES` (all 16
+points BOM's `direction` field actually uses) and colored on the same
+yellow→orange→red scale already established for warning severity — faster
+wind reads as "hotter" the same way a more severe warning does, reusing an
+existing visual language rather than inventing a new one. Clicking an
+arrow opens a popup with the exact station name, km/h, and compass
+direction, matching the existing Coverage/Warning-circle pattern (asked
+and confirmed) rather than an always-visible label, which would be a new
+UI convention not used anywhere else in this app.
+
+The toggle effect fetches once per toggle-on and groups the markers into an
+`L.layerGroup`, removed on toggle-off via the effect's cleanup — the same
+simpler fetch-and-group shape Rings/Coverage already use, not Lightning's
+poll+diff: wind doesn't change on a timescale that needs refreshing while
+the layer stays open, and it has none of Lightning's "don't replay the
+pulse animation" constraint that forced diffing there.
+
+**Verified:** typecheck/build; live Playwright check confirming exactly 8
+arrow markers render (one per station) when the toggle is switched on,
+and that clicking one opens a popup reading `"Terrey Hills: 15 km/h from
+the ENE"` — matching the live API response exactly, not an approximation;
+visually confirmed in a screenshot that the arrow is genuinely rotated
+(not stuck pointing north) and colored distinctly from the default blue
+calm-wind color; full spec suite green, unaffected (client-rendering plus
+a new simple GET route, same as the other non-lightning layers have no
+dedicated spec coverage).

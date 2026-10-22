@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Strike } from "../../lib/lightning.ts";
 import { nearestStation } from "../../lib/radarStations.ts";
 import type { WarningArea } from "../../lib/warningAreas.ts";
+import type { WindObservation } from "../../lib/wind.ts";
 import LayersPanel, { type LayerToggles } from "./LayersPanel.tsx";
 
 export interface WeatherMapProps {
@@ -203,6 +204,63 @@ function lightningIcon(Leaflet: typeof L): L.DivIcon {
     iconSize: [32, 32],
     iconAnchor: [16, 16],
   });
+}
+
+// BOM's wind observations report direction as one of the 16 standard
+// compass points (confirmed live — "ENE", "WSW", etc.), not raw degrees.
+// 0deg = North = arrow pointing up, matching the arrow glyph's own default
+// orientation below.
+const COMPASS_TO_DEGREES: Record<string, number> = {
+  N: 0,
+  NNE: 22.5,
+  NE: 45,
+  ENE: 67.5,
+  E: 90,
+  ESE: 112.5,
+  SE: 135,
+  SSE: 157.5,
+  S: 180,
+  SSW: 202.5,
+  SW: 225,
+  WSW: 247.5,
+  W: 270,
+  WNW: 292.5,
+  NW: 315,
+  NNW: 337.5,
+};
+
+// Same yellow->orange->red convention already used for warning severity
+// (SEVERITY_COLORS above) — faster wind reads as "hotter" the same way a
+// more severe warning does, reusing an established visual language rather
+// than inventing a new one for this layer.
+function windColor(speedKmh: number): string {
+  if (speedKmh >= 40) return "#c0392b";
+  if (speedKmh >= 25) return "#e67e22";
+  if (speedKmh >= 10) return "#d68910";
+  return "#2e86c1";
+}
+
+// A simple arrow divIcon (same convention as lightningIcon/locationIcon),
+// rotated to the wind's compass direction and colored by speed. Points in
+// the direction the wind is blowing *from*, matching BOM's own convention
+// (the `direction` field is already "from", e.g. "wind from the east").
+function windArrowIcon(Leaflet: typeof L, speedKmh: number, direction: string): L.DivIcon {
+  const degrees = COMPASS_TO_DEGREES[direction] ?? 0;
+  const color = windColor(speedKmh);
+  return Leaflet.divIcon({
+    className: "",
+    html: `
+      <svg width="24" height="24" viewBox="-12 -12 24 24" style="overflow: visible; transform: rotate(${degrees}deg);">
+        <path d="M0 -9 L5 4 L0 1 L-5 4 Z" fill="${color}" stroke="#1a1a1a" stroke-width="1" stroke-linejoin="round" />
+      </svg>
+    `,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+  });
+}
+
+function windPopupHtml(obs: { stationName: string; speedKmh: number; direction: string }): string {
+  return `${escapeHtml(obs.stationName)}: ${obs.speedKmh} km/h from the ${escapeHtml(obs.direction)}`;
 }
 
 // Inline, not an icon-font/library dependency — matches the rest of the
@@ -419,6 +477,7 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
     rings: false,
     coverage: false,
     lightning: false,
+    wind: false,
   });
   // Diffed against each poll's response, keyed by a derived id (strikes
   // carry none of their own) — see lightningIcon's comment for why this
@@ -784,6 +843,41 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
       circle.remove();
     };
   }, [toggles.coverage, mapReady, lat, lon]);
+
+  // Wind: one arrow per radar station (lib/wind.ts resolves each of
+  // RADAR_STATIONS to its nearest real BOM weather station), fetched once
+  // per toggle-on rather than polled — unlike lightning, wind observations
+  // don't change on a timescale that needs refreshing while the layer is
+  // open, so this matches the simpler fetch-and-group pattern Rings/Coverage
+  // already use rather than Lightning's poll+diff.
+  useEffect(() => {
+    const map = mapRef.current;
+    const Leaflet = leafletRef.current;
+    if (!map || !Leaflet || !mapReady || !toggles.wind) return;
+
+    const group = Leaflet.layerGroup().addTo(map);
+    let cancelled = false;
+
+    void fetch("/api/bom/wind")
+      .then((res) => (res.ok ? (res.json() as Promise<WindObservation[]>) : []))
+      .then((observations) => {
+        if (cancelled) return;
+        for (const obs of observations) {
+          Leaflet.marker([obs.lat, obs.lon], { icon: windArrowIcon(Leaflet, obs.speedKmh, obs.direction) })
+            .addTo(group)
+            .bindPopup(windPopupHtml(obs));
+        }
+      })
+      .catch(() => {
+        // Wind arrows are an enhancement, not load-bearing — a failed
+        // fetch here just means no arrows this toggle, nothing to recover.
+      });
+
+    return () => {
+      cancelled = true;
+      group.remove();
+    };
+  }, [toggles.wind, mapReady]);
 
   // Lightning: polls the server-buffered strike list (lib/lightning.ts) and
   // diffs against lightningMarkersRef, rather than clearing and redrawing
