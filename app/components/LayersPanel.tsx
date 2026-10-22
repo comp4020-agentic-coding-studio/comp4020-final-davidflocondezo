@@ -6,6 +6,7 @@ export interface LayerToggles {
   coverage: boolean;
   lightning: boolean;
   wind: boolean;
+  temperature: boolean;
 }
 
 export interface LayersPanelProps {
@@ -19,6 +20,7 @@ const LAYERS: { key: keyof LayerToggles; label: string }[] = [
   { key: "coverage", label: "Radar coverage" },
   { key: "lightning", label: "Lightning" },
   { key: "wind", label: "Wind" },
+  { key: "temperature", label: "Temperature" },
 ];
 
 // A plain block above the map, not an overlay on the map canvas — this app

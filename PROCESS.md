@@ -788,3 +788,77 @@ not independently), then inspecting the live DOM on the running app to
 confirm the real markers use the new `<line>`/open-`<path>` markup (not
 just the isolated test), and a cropped screenshot confirming the rendered
 result reads clearly as a thin arrow, not a solid shape.
+
+## Temperature layer: true interpolated heat map
+
+6th Layers-panel toggle. The user asked specifically for a heat map (smooth
+gradient), not per-station numeric labels — "Can we just make it a heat
+map on top of the map?" — so this uses `L.heatLayer` (the `leaflet.heat`
+plugin) rather than discrete circles/markers, the only exception so far to
+this app's otherwise-zero-extra-frontend-deps stance. `leaflet.heat` is
+tiny (6.8kB), has no transitive dependencies, is written by Leaflet's own
+creator, and has `@types/leaflet.heat` declaration-merging `L.heatLayer`
+onto the `leaflet` module's own types — no `any`.
+
+BOM's observations endpoint already returns `temp` on the exact same
+response as `wind` (confirmed live — both sit in `data` together), from
+the same ~168-point grid `lib/wind.ts` already fetches for the Wind layer.
+Rather than add a second `lib/temperature.ts` with its own grid sweep
+(doubling request volume against an API already shown to rate-limit close
+to that volume — see below), `lib/wind.ts`'s `WindObservation` gained one
+more field, `tempC: number | undefined` (undefined when a station has no
+current reading, mirroring how a missing wind reading is already skipped
+rather than faked). Both layers now read from the same `/api/bom/wind`
+route and the same 10-minute `cached()` TTL, so toggling Wind and
+Temperature on together costs one real BOM fetch, not two.
+
+**The grid density was tested live, not assumed**, when the user asked for
+"more than 60 sparse points" to get a finer-grained heat map than Wind's
+existing density: a 378-point grid failed hard (257/378 requests 403'd); a
+238-point grid failed partway through (first ~165 succeeded, then every
+remaining request 403'd). Both recovered within a few seconds once the
+burst stopped — a burst-rate limit, not a lasting ban, consistent with
+this API's known flakiness elsewhere in this project — but this confirmed
+the existing 168-point grid is already very close to the real ceiling for
+a single burst. Presented this evidence to the user rather than silently
+picking a denser number; the user chose to keep the proven 168-point grid
+over risking a denser one that would intermittently leave gaps depending
+on exactly when the limit trips mid-fetch.
+
+**Bug found and fixed: `leaflet.heat` silently did nothing (`heatLayer is
+not a function`) under this app's dynamic-import pattern.** `WeatherMap.tsx`
+loads Leaflet via `import("leaflet")` (needed since Leaflet touches
+`window` and can't be a static import under Next.js SSR) and had been
+threading the resolved module namespace object through everywhere as `L`.
+`leaflet.heat`'s bundle patches `heatLayer` onto a bare, undeclared `L`
+identifier that resolves against the global object — which is
+`window.L`, a separate UMD backward-compat object Leaflet's own bundle
+sets as a side effect of loading, *not* the ES module namespace object
+`import("leaflet")` returns. Confirmed live via an object-identity check:
+`importedL !== window.L`, and `importedL.heatLayer` was `undefined` while
+`window.L.heatLayer` was a function. Also confirmed `window.L` has full
+method parity with the imported module (`map`, `marker`, `circle`,
+`tileLayer`, `divIcon`, `layerGroup`, `popup` all present as functions on
+both) before relying on it. Fix: after `import("leaflet")` resolves and
+`import("leaflet.heat")` runs as a side-effect import right after it, the
+mount effect reassigns its working `L` reference to `window.L` and uses
+that everywhere (map creation, markers, tile layers, stored in
+`leafletRef`) instead of the original import result.
+
+Color scale is a dedicated blue→red `TEMP_GRADIENT` (BOM's own
+temperature-map convention: blue=cold, red=hot) passed to `L.heatLayer`'s
+`gradient` option, distinct from `windColor`'s yellow→orange→red scale
+even though the hue ranges overlap, since the two answer different
+questions (hazard-adjacent wind speed vs. plain temperature). Raw `tempC`
+values are passed directly as the heat point's intensity with `max: 45`
+(a sensible ceiling for Australian conditions) rather than hand-rolling a
+0–1 normalization — `L.heatLayer` already does that internally.
+
+**Verified:** typecheck clean (`@types/leaflet.heat` resolves without
+`any`); live Playwright check confirming the heat layer canvas
+(`canvas.leaflet-heatmap-layer`) renders (count: 1) with zero console/page
+errors after the `window.L` fix, where before the fix it silently
+produced zero canvases; a screenshot visually confirming a real
+blue-to-orange gradient spanning the areas with data (Sydney, Canberra,
+Bendigo all distinctly colored, not just isolated dots); full spec suite
+green (10/10), unaffected — client-rendering only, no new route.

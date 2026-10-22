@@ -1,8 +1,13 @@
-// Wind speed/direction for the "Wind" map layer. No new data source: BOM's
-// own observations endpoint (lib/bom.ts getWeather already fetches it for
-// the selected place) carries wind on every response — confirmed live:
-// { speed_kilometre, speed_knot, direction } where direction is a 16-point
-// compass string ("ENE" etc).
+// Wind speed/direction AND temperature for the "Wind" and "Temperature" map
+// layers. No new data source: BOM's own observations endpoint (lib/bom.ts
+// getWeather already fetches it for the selected place) carries wind and
+// temp on the exact same response — confirmed live:
+// { temp, wind: { speed_kilometre, speed_knot, direction } } where
+// direction is a 16-point compass string ("ENE" etc). Fetched together
+// here, from one grid, rather than two separate modules each running their
+// own grid sweep: see the ceiling-testing note below — this API's rate
+// limit is close enough to the current grid size that doubling the request
+// volume for a second, independent layer isn't worth the risk.
 //
 // BOM's observations API is per-location, not a grid, so "multiple arrows
 // across the map" (what the user asked for, matching BOM's own Rain radar
@@ -16,6 +21,18 @@
 // with zero request failures even at concurrency 15 — a reasonable
 // approximation of BOM's own wind-layer density, not a new scraped
 // dataset.
+//
+// This grid size is close to this API's actual rate-limit ceiling, tested
+// live rather than assumed: a 378-point grid failed hard (257/378 403'd),
+// and a 238-point grid failed partway through (first ~165 succeeded, then
+// every remaining request 403'd) — both recovered within seconds once the
+// burst stopped (a burst-rate limit, not a lasting ban, consistent with
+// this API's known Akamai-fronted flakiness elsewhere in this project).
+// 168 isn't an arbitrary conservative pick — it's very close to the real
+// ceiling for a single burst, so it stays the grid size for both layers
+// rather than risking a denser one that would intermittently leave a
+// production response with gaps depending on exactly when the limit trips
+// mid-fetch.
 import ngeohash from "ngeohash";
 import { cached } from "./bom.ts";
 
@@ -50,6 +67,13 @@ export interface WindObservation {
   stationName: string;
   speedKmh: number;
   direction: string;
+  // undefined when this station has no current temperature reading —
+  // mirrors how a missing wind reading already fails the whole observation
+  // rather than faking a number, so this is the one field that can
+  // legitimately be absent while the rest of the observation is still used
+  // (the Wind layer doesn't care about temp at all; the Temperature layer
+  // filters on this being defined).
+  tempC: number | undefined;
 }
 
 interface RawStationWind extends WindObservation {
@@ -68,6 +92,7 @@ async function fetchStationWind(lat: number, lon: number): Promise<RawStationWin
   if (!res.ok) return null;
   const body = (await res.json()) as {
     data?: {
+      temp?: number;
       wind?: { speed_kilometre?: number; direction?: string };
       station?: { bom_id?: string; name?: string; distance?: number };
     };
@@ -77,7 +102,9 @@ async function fetchStationWind(lat: number, lon: number): Promise<RawStationWin
   // A station can have no current wind reading (confirmed live) — skipped
   // rather than shown as 0 km/h, which would misrepresent "no data" as
   // "calm". A missing bom_id is treated the same way: without it there's
-  // nothing reliable to dedupe on.
+  // nothing reliable to dedupe on. temp has no equivalent fallback — a
+  // missing temp still leaves a usable wind observation, so it's kept as
+  // undefined on the result rather than discarding the whole observation.
   if (!wind || typeof wind.speed_kilometre !== "number" || !wind.direction || !station?.bom_id) return null;
   return {
     stationId: station.bom_id,
@@ -87,6 +114,7 @@ async function fetchStationWind(lat: number, lon: number): Promise<RawStationWin
     stationName: station.name ?? "Unknown station",
     speedKmh: wind.speed_kilometre,
     direction: wind.direction,
+    tempC: typeof body.data?.temp === "number" ? body.data.temp : undefined,
   };
 }
 

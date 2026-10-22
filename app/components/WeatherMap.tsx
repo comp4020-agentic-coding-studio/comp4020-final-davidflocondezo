@@ -266,6 +266,24 @@ function windPopupHtml(obs: { stationName: string; speedKmh: number; direction: 
   return `${escapeHtml(obs.stationName)}: ${obs.speedKmh} km/h from the ${escapeHtml(obs.direction)}`;
 }
 
+// BOM's own temperature-map convention: blue (cold) -> red (hot). A
+// separate color scale from windColor above, even though both happen to
+// land in a similar hue range, since they answer different questions
+// (hazard-adjacent wind speed vs. plain temperature) — reusing windColor's
+// exact stops here would be a coincidence, not a real shared meaning.
+const TEMP_GRADIENT: L.HeatMapOptions["gradient"] = {
+  0.0: "#2166ac",
+  0.25: "#67a9cf",
+  0.5: "#f7f7f7",
+  0.75: "#ef8a62",
+  1.0: "#b2182b",
+};
+// leaflet.heat's `max` option is the raw value (°C here, not a 0-1 scale)
+// that maps to full intensity — 45°C comfortably covers the hottest
+// readings this app is likely to see without needing per-request
+// recalculation of the actual observed max.
+const TEMP_MAX_C = 45;
+
 // Inline, not an icon-font/library dependency — matches the rest of the
 // app's zero-extra-frontend-deps approach (see PROCESS.md's stack rationale).
 const TRASH_ICON_SVG = `
@@ -481,6 +499,7 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
     coverage: false,
     lightning: false,
     wind: false,
+    temperature: false,
   });
   // Diffed against each poll's response, keyed by a derived id (strikes
   // carry none of their own) — see lightningIcon's comment for why this
@@ -651,8 +670,21 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
       textarea.focus();
     };
 
-    void import("leaflet").then(async (L) => {
+    void import("leaflet").then(async (importedL) => {
       if (cancelled || !containerRef.current) return;
+
+      // Side-effect only — leaflet.heat patches L.heatLayer onto Leaflet's
+      // own global compatibility object (leaflet's bundle sets
+      // `window.L = exports` for old non-module usage — see leaflet-src.js),
+      // not onto the ES module namespace object `import("leaflet")` itself
+      // returns (the two are different objects at runtime, confirmed live:
+      // `importedL !== window.L`, and only `window.L.heatLayer` existed
+      // after importing leaflet.heat). So `window.L`, not the awaited
+      // import result, is the Leaflet reference used everywhere below and
+      // stored in leafletRef — they have identical methods (same
+      // underlying Leaflet build) except window.L also has heatLayer.
+      await import("leaflet.heat");
+      const L = (window as unknown as { L: typeof importedL }).L;
 
       const map = mapRef.current ?? L.map(containerRef.current).setView([lat, lon], 7);
       mapRef.current = map;
@@ -847,12 +879,13 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
     };
   }, [toggles.coverage, mapReady, lat, lon]);
 
-  // Wind: one arrow per radar station (lib/wind.ts resolves each of
-  // RADAR_STATIONS to its nearest real BOM weather station), fetched once
-  // per toggle-on rather than polled — unlike lightning, wind observations
-  // don't change on a timescale that needs refreshing while the layer is
-  // open, so this matches the simpler fetch-and-group pattern Rings/Coverage
-  // already use rather than Lightning's poll+diff.
+  // Wind: one arrow per station resolved from lib/wind.ts's national grid
+  // (see that file for why a grid of points is queried instead of a fixed
+  // station list), fetched once per toggle-on rather than polled — unlike
+  // lightning, wind observations don't change on a timescale that needs
+  // refreshing while the layer is open, so this matches the simpler
+  // fetch-and-group pattern Rings/Coverage already use rather than
+  // Lightning's poll+diff.
   useEffect(() => {
     const map = mapRef.current;
     const Leaflet = leafletRef.current;
@@ -881,6 +914,43 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
       group.remove();
     };
   }, [toggles.wind, mapReady]);
+
+  // Temperature: a true interpolated heat map (leaflet.heat), not discrete
+  // shapes — the user specifically asked for a heat-map feel. Reuses the
+  // exact same /api/bom/wind endpoint and grid as the Wind layer above
+  // (lib/wind.ts now carries temp alongside wind on one fetch) rather than
+  // a separate route: both layers hit the same 10-minute server-side
+  // cache, so toggling Wind and Temperature on together costs one real
+  // fetch against BOM, not two independent grid sweeps.
+  useEffect(() => {
+    const map = mapRef.current;
+    const Leaflet = leafletRef.current;
+    if (!map || !Leaflet || !mapReady || !toggles.temperature) return;
+
+    let cancelled = false;
+    let heat: L.HeatLayer | undefined;
+
+    void fetch("/api/bom/wind")
+      .then((res) => (res.ok ? (res.json() as Promise<WindObservation[]>) : []))
+      .then((observations) => {
+        if (cancelled) return;
+        const points: [number, number, number][] = observations
+          .filter((obs) => obs.tempC !== undefined)
+          .map((obs) => [obs.lat, obs.lon, obs.tempC as number]);
+        heat = Leaflet.heatLayer(points, { max: TEMP_MAX_C, gradient: TEMP_GRADIENT, radius: 60, blur: 40 }).addTo(
+          map,
+        );
+      })
+      .catch(() => {
+        // Same as Wind: an enhancement, not load-bearing — a failed fetch
+        // just means no heat map this toggle.
+      });
+
+    return () => {
+      cancelled = true;
+      heat?.remove();
+    };
+  }, [toggles.temperature, mapReady]);
 
   // Lightning: polls the server-buffered strike list (lib/lightning.ts) and
   // diffs against lightningMarkersRef, rather than clearing and redrawing
