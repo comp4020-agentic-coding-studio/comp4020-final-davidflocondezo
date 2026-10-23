@@ -913,3 +913,23 @@ region) that looked like new bugs before turning out to just be a smaller,
 incomplete fetch. Letting BOM's limiter cool down and the 10-minute cache
 expire naturally, instead of restarting again, eventually produced a
 clean full-grid result to verify against.
+
+**Follow-up — custom 11-band color scale:** the user asked for a specific
+set of 11 RGB colors mapped to 5°C-wide bands from "<0" through "45+",
+rather than the original 5-stop blue→white→red gradient. `leaflet.heat`'s
+`gradient` option only accepts fractions in `[0, 1]` against a single
+positive `max`, so the open-ended "<0" band required shifting the whole
+scale: `TEMP_MIN_C = -5` now anchors fraction `0` (instead of 0°C), and
+each of the 11 requested colors sits at its band's lower boundary
+(`-5, 0, 5, ... 45` → `0.0, 0.1, 0.2, ... 1.0`). Each heat point's
+intensity is `tempC - TEMP_MIN_C` (not raw `tempC`) and `max` is
+`TEMP_MAX_C - TEMP_MIN_C`, so the shift is consistent on both ends rather
+than only changing the gradient stops. Readings below -5°C or above 45°C
+clamp to the end colors, matching the open-ended "<0"/"45+" bands as
+given rather than inventing new colors past them.
+
+**Verified:** typecheck clean; live screenshot confirming the new
+teal/green/yellow palette renders (visibly distinct from the old
+blue-white-orange gradient); full spec suite green (10/10, after one
+transient SSE-stream test flake cleared on an isolated re-run — confirmed
+unrelated to this change).

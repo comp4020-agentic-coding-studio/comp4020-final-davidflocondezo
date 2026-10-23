@@ -266,23 +266,33 @@ function windPopupHtml(obs: { stationName: string; speedKmh: number; direction: 
   return `${escapeHtml(obs.stationName)}: ${obs.speedKmh} km/h from the ${escapeHtml(obs.direction)}`;
 }
 
-// BOM's own temperature-map convention: blue (cold) -> red (hot). A
-// separate color scale from windColor above, even though both happen to
+// A separate color scale from windColor above, even though both happen to
 // land in a similar hue range, since they answer different questions
 // (hazard-adjacent wind speed vs. plain temperature) — reusing windColor's
 // exact stops here would be a coincidence, not a real shared meaning.
-const TEMP_GRADIENT: L.HeatMapOptions["gradient"] = {
-  0.0: "#2166ac",
-  0.25: "#67a9cf",
-  0.5: "#f7f7f7",
-  0.75: "#ef8a62",
-  1.0: "#b2182b",
-};
-// leaflet.heat's `max` option is the raw value (°C here, not a 0-1 scale)
-// that maps to full intensity — 45°C comfortably covers the hottest
-// readings this app is likely to see without needing per-request
-// recalculation of the actual observed max.
+//
+// leaflet.heat's `gradient` only accepts fractions in [0, 1] over a single
+// positive `max`, so these 11 explicit °C bands (requested, including a
+// "<0" and a "45+" open-ended band) are remapped onto that [0, 1] range by
+// treating TEMP_MIN_C as fraction 0 and TEMP_MAX_C as fraction 1 — each
+// stop below sits at its band's *lower* boundary (-5, 0, 5, ... 45), and
+// a point's heat-layer intensity is `tempC - TEMP_MIN_C` (see the effect
+// below) rather than raw tempC, to match.
+const TEMP_MIN_C = -5;
 const TEMP_MAX_C = 45;
+const TEMP_GRADIENT: L.HeatMapOptions["gradient"] = {
+  0.0: "rgb(16, 61, 98)", // <0
+  0.1: "rgb(14, 118, 146)", // 0-5
+  0.2: "rgb(46, 172, 165)", // 5-10
+  0.3: "rgb(109, 204, 166)", // 10-15
+  0.4: "rgb(175, 239, 175)", // 15-20
+  0.5: "rgb(238, 254, 181)", // 20-25
+  0.6: "rgb(244, 225, 112)", // 25-30
+  0.7: "rgb(234, 187, 71)", // 30-35
+  0.8: "rgb(203, 116, 34)", // 35-40
+  0.9: "rgb(173, 71, 3)", // 40-45
+  1.0: "rgb(113, 25, 4)", // 45+
+};
 
 // Inline, not an icon-font/library dependency — matches the rest of the
 // app's zero-extra-frontend-deps approach (see PROCESS.md's stack rationale).
@@ -950,11 +960,13 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
       .then((res) => (res.ok ? (res.json() as Promise<WindObservation[]>) : []))
       .then((observations) => {
         if (cancelled) return;
+        // Shifted by -TEMP_MIN_C so the gradient's 0-fraction stop lines up
+        // with TEMP_MIN_C instead of 0°C — see TEMP_GRADIENT's comment.
         const points: [number, number, number][] = observations
           .filter((obs) => obs.tempC !== undefined)
-          .map((obs) => [obs.lat, obs.lon, obs.tempC as number]);
+          .map((obs) => [obs.lat, obs.lon, (obs.tempC as number) - TEMP_MIN_C]);
         heat = Leaflet.heatLayer(points, {
-          max: TEMP_MAX_C,
+          max: TEMP_MAX_C - TEMP_MIN_C,
           gradient: TEMP_GRADIENT,
           radius: 60,
           blur: 40,
