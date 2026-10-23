@@ -5,6 +5,7 @@ import type L from "leaflet";
 import { useEffect, useRef, useState } from "react";
 import type { Strike } from "../../lib/lightning.ts";
 import { nearestStation } from "../../lib/radarStations.ts";
+import type { TemperatureObservation } from "../../lib/temperature.ts";
 import type { WarningArea } from "../../lib/warningAreas.ts";
 import type { WindObservation } from "../../lib/wind.ts";
 import LayersPanel, { type LayerToggles } from "./LayersPanel.tsx";
@@ -926,12 +927,12 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
   }, [toggles.wind, mapReady]);
 
   // Temperature: a true interpolated heat map (leaflet.heat), not discrete
-  // shapes — the user specifically asked for a heat-map feel. Reuses the
-  // exact same /api/bom/wind endpoint and grid as the Wind layer above
-  // (lib/wind.ts now carries temp alongside wind on one fetch) rather than
-  // a separate route: both layers hit the same 10-minute server-side
-  // cache, so toggling Wind and Temperature on together costs one real
-  // fetch against BOM, not two independent grid sweeps.
+  // shapes — the user specifically asked for a heat-map feel. Fetches
+  // lib/temperature.ts's Open-Meteo-backed grid (~650 points, see that
+  // module's comments) via its own /api/bom/temperature route — switched
+  // from the original BOM-based grid shared with Wind because that grid's
+  // density (capped by BOM's burst rate limit) rendered visibly sparser
+  // than BOM's own temperature map once compared directly.
   useEffect(() => {
     const map = mapRef.current;
     const Leaflet = leafletRef.current;
@@ -956,15 +957,17 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
     // intensity at whatever zoom the user is looking at.
     const syncHeatZoom = () => heat?.setOptions({ maxZoom: map.getZoom() });
 
-    void fetch("/api/bom/wind")
-      .then((res) => (res.ok ? (res.json() as Promise<WindObservation[]>) : []))
+    void fetch("/api/bom/temperature")
+      .then((res) => (res.ok ? (res.json() as Promise<TemperatureObservation[]>) : []))
       .then((observations) => {
         if (cancelled) return;
         // Shifted by -TEMP_MIN_C so the gradient's 0-fraction stop lines up
         // with TEMP_MIN_C instead of 0°C — see TEMP_GRADIENT's comment.
-        const points: [number, number, number][] = observations
-          .filter((obs) => obs.tempC !== undefined)
-          .map((obs) => [obs.lat, obs.lon, (obs.tempC as number) - TEMP_MIN_C]);
+        const points: [number, number, number][] = observations.map((obs) => [
+          obs.lat,
+          obs.lon,
+          obs.tempC - TEMP_MIN_C,
+        ]);
         heat = Leaflet.heatLayer(points, {
           max: TEMP_MAX_C - TEMP_MIN_C,
           gradient: TEMP_GRADIENT,

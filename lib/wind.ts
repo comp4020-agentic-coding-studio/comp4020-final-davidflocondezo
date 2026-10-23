@@ -1,13 +1,11 @@
-// Wind speed/direction AND temperature for the "Wind" and "Temperature" map
-// layers. No new data source: BOM's own observations endpoint (lib/bom.ts
-// getWeather already fetches it for the selected place) carries wind and
-// temp on the exact same response — confirmed live:
-// { temp, wind: { speed_kilometre, speed_knot, direction } } where
-// direction is a 16-point compass string ("ENE" etc). Fetched together
-// here, from one grid, rather than two separate modules each running their
-// own grid sweep: see the ceiling-testing note below — this API's rate
-// limit is close enough to the current grid size that doubling the request
-// volume for a second, independent layer isn't worth the risk.
+// Wind speed/direction for the "Wind" map layer. BOM's observations
+// endpoint also returns temperature on this same response, and the
+// Temperature layer piggybacked on this grid for a while — since moved to
+// lib/temperature.ts (Open-Meteo) instead, because this grid's density is
+// capped by BOM's own burst rate limit at something visibly sparser than
+// BOM's own temperature map (see PROCESS.md). Wind stays on BOM: its
+// popups name real stations ("Terrey Hills: 15 km/h from the ENE"), which
+// is worth keeping as genuine observed data.
 //
 // BOM's observations API is per-location, not a grid, so "multiple arrows
 // across the map" (what the user asked for, matching BOM's own Rain radar
@@ -67,13 +65,6 @@ export interface WindObservation {
   stationName: string;
   speedKmh: number;
   direction: string;
-  // undefined when this station has no current temperature reading —
-  // mirrors how a missing wind reading already fails the whole observation
-  // rather than faking a number, so this is the one field that can
-  // legitimately be absent while the rest of the observation is still used
-  // (the Wind layer doesn't care about temp at all; the Temperature layer
-  // filters on this being defined).
-  tempC: number | undefined;
 }
 
 interface RawStationWind extends WindObservation {
@@ -92,7 +83,6 @@ async function fetchStationWind(lat: number, lon: number): Promise<RawStationWin
   if (!res.ok) return null;
   const body = (await res.json()) as {
     data?: {
-      temp?: number;
       wind?: { speed_kilometre?: number; direction?: string };
       station?: { bom_id?: string; name?: string; distance?: number };
     };
@@ -102,9 +92,7 @@ async function fetchStationWind(lat: number, lon: number): Promise<RawStationWin
   // A station can have no current wind reading (confirmed live) — skipped
   // rather than shown as 0 km/h, which would misrepresent "no data" as
   // "calm". A missing bom_id is treated the same way: without it there's
-  // nothing reliable to dedupe on. temp has no equivalent fallback — a
-  // missing temp still leaves a usable wind observation, so it's kept as
-  // undefined on the result rather than discarding the whole observation.
+  // nothing reliable to dedupe on.
   if (!wind || typeof wind.speed_kilometre !== "number" || !wind.direction || !station?.bom_id) return null;
   return {
     stationId: station.bom_id,
@@ -114,7 +102,6 @@ async function fetchStationWind(lat: number, lon: number): Promise<RawStationWin
     stationName: station.name ?? "Unknown station",
     speedKmh: wind.speed_kilometre,
     direction: wind.direction,
-    tempC: typeof body.data?.temp === "number" ? body.data.temp : undefined,
   };
 }
 

@@ -933,3 +933,68 @@ teal/green/yellow palette renders (visibly distinct from the old
 blue-white-orange gradient); full spec suite green (10/10, after one
 transient SSE-stream test flake cleared on an isolated re-run — confirmed
 unrelated to this change).
+
+## Temperature layer: switched data source from BOM to Open-Meteo
+
+The user compared the Temperature heat map against BOM's own temperature
+map and found it visibly worse — too sparse, with large isolated blobs
+instead of a continuous field — and asked whether a different data source
+could give more points. The underlying constraint hadn't changed:
+Temperature was riding on `lib/wind.ts`'s BOM station grid, which is
+capped at a density close to BOM's burst rate-limit ceiling (documented
+above), regardless of how the heat map itself was tuned.
+
+Researched rather than guessed: **Open-Meteo** (`api.open-meteo.com`) is a
+free, keyless weather API that accepts up to 1000 comma-separated lat/lon
+pairs in a *single* HTTP request and returns model-interpolated current
+weather for each one. Confirmed live before committing to it: a 644-point
+grid across the Australia+Tasmania bounding box this app already uses
+(`lib/wind.ts`'s existing bounds) returned in ~3s with 100% success — no
+per-point station resolution, nothing like BOM's burst-limiting. Being
+model data rather than individual station readings, it also returns a
+value at *every* point, including ocean and remote inland areas lib/wind's
+real-station approach has no coverage for at all — which turns out to
+matter more for a smooth heat map than "real" station data does.
+
+Free-tier limits: 600 calls/min, 5,000/hour, 10,000/day (each point in a
+batch counts as one call). Asked the user directly rather than picking a
+number myself: offered a safer ~400-point/hourly option (~9,600 calls/day)
+against a denser ~650-point/90-minute option (~10,400 calls/day, slightly
+over the stated daily cap). The user chose the denser option, preferring
+map quality closer to BOM's own resolution over strict adherence to an
+unenforced-in-practice daily cap (Open-Meteo's own FAQ notes the monthly
+limit isn't currently enforced while their usage-stats dashboard is still
+in development) — a deliberate, informed trade, not a default.
+
+Also asked whether Wind should move to Open-Meteo too, since it returns
+wind speed/direction alongside temperature and could have unified both
+layers onto one source again. Decided against it: Wind's popups name real
+BOM stations ("Terrey Hills: 15 km/h from the ENE"), and that's worth
+keeping as genuine observed data — anonymous Open-Meteo grid points would
+be a downgrade there, even though it would simplify the codebase to one
+data source. **Wind stays on BOM; only Temperature moved.**
+
+New `lib/temperature.ts` mirrors `lib/wind.ts`'s existing conventions
+(grid generation over the same bounding box, `cached()` reuse from
+`lib/bom.ts`) but is simpler — one HTTP request for the whole grid, not
+N per-point requests, so no concurrency batching or station-dedup logic is
+needed. New `app/api/bom/temperature/route.ts` is a thin proxy, same shape
+as the existing `app/api/bom/wind/route.ts`. `lib/wind.ts`'s `tempC` field
+(added when Temperature first piggybacked on it) was removed — Wind is
+wind-only again. `WeatherMap.tsx`'s Temperature effect now fetches
+`/api/bom/temperature` instead of `/api/bom/wind`; the heat-map rendering
+itself (gradient, the zoom-decay fix, radius/blur) didn't need to change,
+since all of that is about `leaflet.heat` and is independent of where the
+points come from.
+
+**Verified:** typecheck clean; live `curl` confirming 644 points across
+the full lat/lon bounding box (including areas BOM's grid has no coverage
+for) in a single ~3s request; live Playwright pixel inspection showing
+heat-layer canvas coverage jumped from ~32% (BOM, sparse blobs) to ~99.7%
+(Open-Meteo, a genuinely continuous field) with zero console/page errors;
+a zoomed-out screenshot showing a smooth, physically plausible
+inland-hot/coastal-cooler gradient, closer to BOM's own temperature map
+in character than the previous sparse version; confirmed Wind still works
+independently afterward (61 arrow markers, real station-named popup
+unaffected by the Temperature change); full spec suite green (10/10,
+after the same known-flaky SSE-stream test cleared on an isolated re-run).
