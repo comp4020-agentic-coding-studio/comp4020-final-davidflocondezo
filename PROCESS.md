@@ -1077,3 +1077,48 @@ during this verification round hit a 403 from BOM's own API directly,
 unrelated to any code here, consistent with the burst-rate-limit behavior
 already documented for that API elsewhere in this file); full spec suite
 green (10/10).
+
+## Temperature layer: clipped to Australia's real coastline
+
+The user pointed out the heat map (correct colors, correct gradient after
+the fix above) still rendered as a square over the continent — the
+Open-Meteo grid's lat/lon bounding box, with no masking of any kind. Asked
+for the overlay to follow Australia's actual outline instead.
+
+Researched a data source rather than hand-drawing one: **Natural Earth's
+1:110m Admin-0 Countries dataset** is explicitly public domain (no
+attribution required) and its Australia feature (mainland + Tasmania, 2
+rings, 241 points total) is small enough to vendor directly — extracted
+from the GeoJSON mirror at `github.com/nvkelso/natural-earth-vector` down
+to just the geometry (no properties), it's ~5.8KB as a plain array. A finer
+50m-resolution version exists (~46.6KB, 42 polygons incl. minor islands) if
+the 110m outline ever looks too coarse, but 110m already reads clearly as
+Australia's real coastline at this app's zoom levels. New `lib/australiaOutline.ts`
+holds it as a plain exported constant — matching `lib/radarStations.ts`'s
+existing convention for small embedded geographic data — rather than a
+`public/*.json` fetched asset, keeping it synchronous with no extra
+network request on every render. No new npm dependency: the repo had zero
+geo/GIS packages already, and a whole-world dataset package just to
+extract one country would be unnecessary weight for ~6KB of data.
+
+**Clipping technique:** `buildTemperatureImage` already draws the full
+rectangular color grid into an offscreen canvas before calling
+`toDataURL()`. After the existing `putImageData` call, each outline ring is
+traced as a subpath of one `Path2D` (mapping `[lon, lat]` to pixel space
+with the exact inverse of the bilinear sampling loop's own index math), and
+`ctx.globalCompositeOperation = "destination-in"` followed by `ctx.fill(path)`
+keeps only the pixels already drawn that fall inside either ring, making
+everything else transparent. This is the standard canvas technique for
+masking an already-rendered image to an arbitrary shape — no second canvas,
+no library, and it composes directly with the existing pixel-writing loop
+rather than requiring a redraw.
+
+**Verified:** `pnpm exec tsc --noEmit` clean; live Playwright screenshots
+at the app's normal zoom and zoomed out to see the whole country confirm
+the heat color now stops exactly at the coastline (visible directly near
+Sydney/Wollongong, where color ends and the blue ocean basemap begins) and
+the zoomed-out silhouette reads unmistakably as Australia's real shape,
+not a rectangle; a cropped, 3x-zoomed screenshot of the Tasmania region
+confirms its ring is independently clipped to its own island outline, not
+merged into or excluded from the mainland's mask; full spec suite green
+(10/10); confirmed no leftover debug code via grep.

@@ -3,6 +3,7 @@
 import "leaflet/dist/leaflet.css";
 import type L from "leaflet";
 import { useEffect, useRef, useState } from "react";
+import { AUSTRALIA_OUTLINE } from "../../lib/australiaOutline.ts";
 import type { Strike } from "../../lib/lightning.ts";
 import { nearestStation } from "../../lib/radarStations.ts";
 import {
@@ -387,6 +388,27 @@ function buildTemperatureImage(observations: TemperatureObservation[]): string {
     }
   }
   ctx.putImageData(imageData, 0, 0);
+
+  // Clip to Australia's real coastline instead of leaving the full
+  // rectangle colored — the grid's own bounds are a lat/lon box, but the
+  // data only means something on land. Each ring (mainland, Tasmania) is
+  // one subpath in a single Path2D; destination-in keeps only pixels
+  // already drawn that fall inside the path (either ring, since a fill
+  // treats disjoint subpaths as an OR), making everything else
+  // transparent rather than erasing and redrawing.
+  const path = new Path2D();
+  for (const ring of AUSTRALIA_OUTLINE) {
+    ring.forEach(([lon, lat], i) => {
+      const x = ((lon - GRID_LON_RANGE.min) / (GRID_LON_RANGE.max - GRID_LON_RANGE.min)) * (width - 1);
+      const y = ((GRID_LAT_RANGE.max - lat) / (GRID_LAT_RANGE.max - GRID_LAT_RANGE.min)) * (height - 1);
+      if (i === 0) path.moveTo(x, y);
+      else path.lineTo(x, y);
+    });
+    path.closePath();
+  }
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.fill(path);
+
   return canvas.toDataURL();
 }
 
