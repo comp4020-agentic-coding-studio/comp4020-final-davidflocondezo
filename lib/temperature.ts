@@ -25,9 +25,15 @@ const API_BASE = "https://api.open-meteo.com/v1/forecast";
 
 // Same Australia + Tasmania bounding box lib/wind.ts uses. 1.5-degree
 // spacing was the density tested live (644 points, 100% success, ~3.4s)
-// to land close to the ~650-point target.
-const GRID_LAT_RANGE = { min: -44, max: -10, step: 1.5 };
-const GRID_LON_RANGE = { min: 113, max: 154, step: 1.5 };
+// to land close to the ~650-point target. Exported so the client can
+// reshape the flat response below into its real row-major grid (rows =
+// latitude steps, cols = longitude steps) for bilinear interpolation,
+// and can map an image overlay onto the exact same bounds, without
+// duplicating these numbers.
+export const GRID_LAT_RANGE = { min: -44, max: -10, step: 1.5 };
+export const GRID_LON_RANGE = { min: 113, max: 154, step: 1.5 };
+export const GRID_COLS = Math.floor((GRID_LON_RANGE.max - GRID_LON_RANGE.min) / GRID_LON_RANGE.step) + 1;
+export const GRID_ROWS = Math.floor((GRID_LAT_RANGE.max - GRID_LAT_RANGE.min) / GRID_LAT_RANGE.step) + 1;
 
 // 90 minutes: temperature doesn't swing fast enough to need more frequent
 // refreshing, and it keeps the daily call budget close to Open-Meteo's
@@ -45,10 +51,18 @@ function gridPoints(): { lat: number; lon: number }[] {
   return points;
 }
 
+// tempC is nullable (rather than filtering missing readings out, as
+// lib/wind.ts does for individual stations) because the client reshapes
+// this flat array back into its row-major grid for bilinear
+// interpolation — dropping an entry would shift every later point into
+// the wrong grid cell. A missing reading is rare in practice (model data,
+// not a real station that can go offline) but is kept explicit rather
+// than silently coerced to 0, which would misrepresent "no data" as "zero
+// degrees".
 export interface TemperatureObservation {
   lat: number;
   lon: number;
-  tempC: number;
+  tempC: number | null;
 }
 
 interface OpenMeteoResult {
@@ -65,11 +79,9 @@ export async function getTemperatureObservations(): Promise<TemperatureObservati
     const res = await fetch(`${API_BASE}?latitude=${latitude}&longitude=${longitude}&current=temperature_2m`);
     if (!res.ok) throw new Error(`Open-Meteo request failed: ${res.status}`);
     const body = (await res.json()) as OpenMeteoResult[];
-    // A point can come back with no current reading (not observed live,
-    // but mirrors how lib/wind.ts already treats a missing reading —
-    // skipped rather than faked as 0).
-    return body
-      .filter((r) => typeof r.current?.temperature_2m === "number")
-      .map((r) => ({ lat: r.latitude, lon: r.longitude, tempC: r.current!.temperature_2m! }));
+    return points.map((p, i) => {
+      const tempC = body[i]?.current?.temperature_2m;
+      return { lat: p.lat, lon: p.lon, tempC: typeof tempC === "number" ? tempC : null };
+    });
   });
 }

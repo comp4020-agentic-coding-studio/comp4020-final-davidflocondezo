@@ -5,7 +5,13 @@ import type L from "leaflet";
 import { useEffect, useRef, useState } from "react";
 import type { Strike } from "../../lib/lightning.ts";
 import { nearestStation } from "../../lib/radarStations.ts";
-import type { TemperatureObservation } from "../../lib/temperature.ts";
+import {
+  GRID_COLS,
+  GRID_LAT_RANGE,
+  GRID_LON_RANGE,
+  GRID_ROWS,
+  type TemperatureObservation,
+} from "../../lib/temperature.ts";
 import type { WarningArea } from "../../lib/warningAreas.ts";
 import type { WindObservation } from "../../lib/wind.ts";
 import LayersPanel, { type LayerToggles } from "./LayersPanel.tsx";
@@ -272,28 +278,117 @@ function windPopupHtml(obs: { stationName: string; speedKmh: number; direction: 
 // (hazard-adjacent wind speed vs. plain temperature) — reusing windColor's
 // exact stops here would be a coincidence, not a real shared meaning.
 //
-// leaflet.heat's `gradient` only accepts fractions in [0, 1] over a single
-// positive `max`, so these 11 explicit °C bands (requested, including a
-// "<0" and a "45+" open-ended band) are remapped onto that [0, 1] range by
-// treating TEMP_MIN_C as fraction 0 and TEMP_MAX_C as fraction 1 — each
-// stop below sits at its band's *lower* boundary (-5, 0, 5, ... 45), and
-// a point's heat-layer intensity is `tempC - TEMP_MIN_C` (see the effect
-// below) rather than raw tempC, to match.
-const TEMP_MIN_C = -5;
-const TEMP_MAX_C = 45;
-const TEMP_GRADIENT: L.HeatMapOptions["gradient"] = {
-  0.0: "rgb(16, 61, 98)", // <0
-  0.1: "rgb(14, 118, 146)", // 0-5
-  0.2: "rgb(46, 172, 165)", // 5-10
-  0.3: "rgb(109, 204, 166)", // 10-15
-  0.4: "rgb(175, 239, 175)", // 15-20
-  0.5: "rgb(238, 254, 181)", // 20-25
-  0.6: "rgb(244, 225, 112)", // 25-30
-  0.7: "rgb(234, 187, 71)", // 30-35
-  0.8: "rgb(203, 116, 34)", // 35-40
-  0.9: "rgb(173, 71, 3)", // 40-45
-  1.0: "rgb(113, 25, 4)", // 45+
-};
+// Each stop sits at its band's *lower* boundary (<0, 0-5, 5-10, ... 45+),
+// smoothly interpolated between neighbors by colorForTempC below — a
+// continuous gradient (matching BOM's own temperature map look), not
+// discrete painted bands.
+const TEMP_COLOR_STOPS: { tempC: number; rgb: [number, number, number] }[] = [
+  { tempC: -5, rgb: [16, 61, 98] }, // <0
+  { tempC: 0, rgb: [14, 118, 146] }, // 0-5
+  { tempC: 5, rgb: [46, 172, 165] }, // 5-10
+  { tempC: 10, rgb: [109, 204, 166] }, // 10-15
+  { tempC: 15, rgb: [175, 239, 175] }, // 15-20
+  { tempC: 20, rgb: [238, 254, 181] }, // 20-25
+  { tempC: 25, rgb: [244, 225, 112] }, // 25-30
+  { tempC: 30, rgb: [234, 187, 71] }, // 30-35
+  { tempC: 35, rgb: [203, 116, 34] }, // 35-40
+  { tempC: 40, rgb: [173, 71, 3] }, // 40-45
+  { tempC: 45, rgb: [113, 25, 4] }, // 45+
+];
+
+function colorForTempC(tempC: number): [number, number, number] {
+  const stops = TEMP_COLOR_STOPS;
+  if (tempC <= stops[0].tempC) return stops[0].rgb;
+  const lastStop = stops[stops.length - 1];
+  if (tempC >= lastStop.tempC) return lastStop.rgb;
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i];
+    const b = stops[i + 1];
+    if (tempC <= b.tempC) {
+      const t = (tempC - a.tempC) / (b.tempC - a.tempC);
+      return [a.rgb[0] + (b.rgb[0] - a.rgb[0]) * t, a.rgb[1] + (b.rgb[1] - a.rgb[1]) * t, a.rgb[2] + (b.rgb[2] - a.rgb[2]) * t];
+    }
+  }
+  return lastStop.rgb;
+}
+
+// Bilinear interpolation across a regular row-major grid (rows = latitude
+// steps north-to-south, cols = longitude steps west-to-east, matching
+// lib/temperature.ts's gridPoints() iteration order exactly) — the correct
+// tool for "every grid cell already has a real value" data, unlike
+// leaflet.heat's point-stamping approach (see the Temperature effect's
+// comment for why that broke on this dense a grid). latIndex/lonIndex are
+// fractional indices into the grid (e.g. 2.5 = halfway between row 2 and
+// row 3), clamped at the edges rather than wrapping or extrapolating.
+function bilinearSample(grid: number[][], latIndex: number, lonIndex: number): number {
+  const r0 = Math.max(0, Math.min(grid.length - 1, Math.floor(latIndex)));
+  const r1 = Math.min(grid.length - 1, r0 + 1);
+  const c0 = Math.max(0, Math.min(grid[0].length - 1, Math.floor(lonIndex)));
+  const c1 = Math.min(grid[0].length - 1, c0 + 1);
+  const fr = latIndex - r0;
+  const fc = lonIndex - c0;
+  const top = grid[r0][c0] * (1 - fc) + grid[r0][c1] * fc;
+  const bottom = grid[r1][c0] * (1 - fc) + grid[r1][c1] * fc;
+  return top * (1 - fr) + bottom * fr;
+}
+
+// Pixels-per-grid-cell for the offscreen canvas the heat image is rendered
+// onto — higher means a smoother-looking gradient between grid points.
+// Independent of map zoom: L.imageOverlay stretches this one image onto
+// its geographic bounds the same way at any zoom, exactly like the
+// existing radar tile layer already does.
+const TEMP_IMAGE_SCALE = 12;
+
+// Builds the Temperature heat image as a data URL. Reshapes the flat,
+// row-major /api/bom/temperature response into a 2D grid (a null reading —
+// rare, since this is model data rather than a real station that can go
+// offline — is filled from its immediate non-null neighbors, falling back
+// to the grid's overall average, so one gap doesn't produce a NaN hole),
+// then bilinearly samples it at TEMP_IMAGE_SCALE pixels per grid cell and
+// maps each sample to a color via colorForTempC.
+function buildTemperatureImage(observations: TemperatureObservation[]): string {
+  const raw: (number | null)[][] = [];
+  for (let row = 0; row < GRID_ROWS; row++) {
+    raw.push(observations.slice(row * GRID_COLS, (row + 1) * GRID_COLS).map((obs) => obs.tempC));
+  }
+  const known = raw.flat().filter((v): v is number => v !== null);
+  const fallbackAvg = known.length > 0 ? known.reduce((a, b) => a + b, 0) / known.length : 15;
+  const grid: number[][] = raw.map((row, r) =>
+    row.map((v, c) => {
+      if (v !== null) return v;
+      const neighbors = [raw[r - 1]?.[c], raw[r + 1]?.[c], row[c - 1], row[c + 1]].filter(
+        (n): n is number => n != null,
+      );
+      return neighbors.length > 0 ? neighbors.reduce((a, b) => a + b, 0) / neighbors.length : fallbackAvg;
+    }),
+  );
+
+  const width = (GRID_COLS - 1) * TEMP_IMAGE_SCALE;
+  const height = (GRID_ROWS - 1) * TEMP_IMAGE_SCALE;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d") as CanvasRenderingContext2D;
+  const imageData = ctx.createImageData(width, height);
+  for (let y = 0; y < height; y++) {
+    // Row 0 of `grid` is the northernmost latitude (gridPoints() starts at
+    // GRID_LAT_RANGE.max), and an image overlay's top row maps to its
+    // bounds' north edge — so y=0 already lines up with row 0, no flip.
+    const latIndex = (y / (height - 1)) * (GRID_ROWS - 1);
+    for (let x = 0; x < width; x++) {
+      const lonIndex = (x / (width - 1)) * (GRID_COLS - 1);
+      const tempC = bilinearSample(grid, latIndex, lonIndex);
+      const [r, g, b] = colorForTempC(tempC);
+      const i = (y * width + x) * 4;
+      imageData.data[i] = r;
+      imageData.data[i + 1] = g;
+      imageData.data[i + 2] = b;
+      imageData.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return canvas.toDataURL();
+}
 
 // Inline, not an icon-font/library dependency — matches the rest of the
 // app's zero-extra-frontend-deps approach (see PROCESS.md's stack rationale).
@@ -681,21 +776,8 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
       textarea.focus();
     };
 
-    void import("leaflet").then(async (importedL) => {
+    void import("leaflet").then(async (L) => {
       if (cancelled || !containerRef.current) return;
-
-      // Side-effect only — leaflet.heat patches L.heatLayer onto Leaflet's
-      // own global compatibility object (leaflet's bundle sets
-      // `window.L = exports` for old non-module usage — see leaflet-src.js),
-      // not onto the ES module namespace object `import("leaflet")` itself
-      // returns (the two are different objects at runtime, confirmed live:
-      // `importedL !== window.L`, and only `window.L.heatLayer` existed
-      // after importing leaflet.heat). So `window.L`, not the awaited
-      // import result, is the Leaflet reference used everywhere below and
-      // stored in leafletRef — they have identical methods (same
-      // underlying Leaflet build) except window.L also has heatLayer.
-      await import("leaflet.heat");
-      const L = (window as unknown as { L: typeof importedL }).L;
 
       const map = mapRef.current ?? L.map(containerRef.current).setView([lat, lon], 7);
       mapRef.current = map;
@@ -926,56 +1008,45 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
     };
   }, [toggles.wind, mapReady]);
 
-  // Temperature: a true interpolated heat map (leaflet.heat), not discrete
-  // shapes — the user specifically asked for a heat-map feel. Fetches
+  // Temperature: a smooth interpolated heat map, not discrete shapes — the
+  // user specifically asked for a heat-map feel. Fetches
   // lib/temperature.ts's Open-Meteo-backed grid (~650 points, see that
-  // module's comments) via its own /api/bom/temperature route — switched
-  // from the original BOM-based grid shared with Wind because that grid's
-  // density (capped by BOM's burst rate limit) rendered visibly sparser
-  // than BOM's own temperature map once compared directly.
+  // module's comments) via its own /api/bom/temperature route.
+  //
+  // Originally rendered via the leaflet.heat plugin, which stamps each
+  // point as a soft circle and *sums* overlapping circles' intensity — a
+  // density-heatmap algorithm ("more points clustered here = hotter"), not
+  // a value-interpolation one. That was fine for the old sparse BOM grid
+  // (points far enough apart that circles rarely overlapped) but broke
+  // badly on this dense a grid: neighboring points' circles overlap
+  // heavily, especially when zoomed out, and their summed intensity blew
+  // past the gradient's max — confirmed live, over a third of the canvas
+  // pinned to the single hottest/coldest color, a flat "big square of
+  // colour" instead of a gradient. No radius/blur/color tuning could fix
+  // this; it's the wrong algorithm for "every grid cell already has a real
+  // value" data. Replaced with buildTemperatureImage's own bilinear
+  // interpolation (see its comment), rendered to a plain image and placed
+  // with L.imageOverlay — already part of Leaflet core, no plugin needed —
+  // which Leaflet scales/repositions on pan and zoom exactly like the
+  // existing radar tile layer, with no zoom-dependent intensity decay to
+  // work around.
   useEffect(() => {
     const map = mapRef.current;
     const Leaflet = leafletRef.current;
     if (!map || !Leaflet || !mapReady || !toggles.temperature) return;
 
     let cancelled = false;
-    let heat: L.HeatLayer | undefined;
-
-    // leaflet.heat decays each point's intensity by 1/2^(maxZoom - currentZoom)
-    // (capped at 12 levels) — built for density clustering across zoom
-    // levels, where fewer, farther-apart points should look fainter when
-    // zoomed out. That decay is wrong for this layer: tempC is an absolute
-    // reading, not a density count, and it should look the same regardless
-    // of zoom. Left at its default (the *map's* maxZoom, 18, vs. this app's
-    // zoom-7 view — an 11-level gap), every point decayed to ~0 intensity
-    // and the whole canvas rendered at the library's ~5% minimum-opacity
-    // floor — confirmed live via pixel inspection (max alpha 13/255 at any
-    // radius/blur) before finding this in leaflet.heat's own source, so no
-    // radius/blur tuning could have fixed it. Pinning the layer's own
-    // `maxZoom` option to the map's *current* zoom (updated on every zoom
-    // change below) makes the decay factor always 1 — full, correct
-    // intensity at whatever zoom the user is looking at.
-    const syncHeatZoom = () => heat?.setOptions({ maxZoom: map.getZoom() });
+    let overlay: L.ImageOverlay | undefined;
 
     void fetch("/api/bom/temperature")
       .then((res) => (res.ok ? (res.json() as Promise<TemperatureObservation[]>) : []))
       .then((observations) => {
-        if (cancelled) return;
-        // Shifted by -TEMP_MIN_C so the gradient's 0-fraction stop lines up
-        // with TEMP_MIN_C instead of 0°C — see TEMP_GRADIENT's comment.
-        const points: [number, number, number][] = observations.map((obs) => [
-          obs.lat,
-          obs.lon,
-          obs.tempC - TEMP_MIN_C,
-        ]);
-        heat = Leaflet.heatLayer(points, {
-          max: TEMP_MAX_C - TEMP_MIN_C,
-          gradient: TEMP_GRADIENT,
-          radius: 60,
-          blur: 40,
-          maxZoom: map.getZoom(),
-        }).addTo(map);
-        map.on("zoomend", syncHeatZoom);
+        if (cancelled || observations.length === 0) return;
+        const bounds: L.LatLngBoundsExpression = [
+          [GRID_LAT_RANGE.min, GRID_LON_RANGE.min],
+          [GRID_LAT_RANGE.max, GRID_LON_RANGE.max],
+        ];
+        overlay = Leaflet.imageOverlay(buildTemperatureImage(observations), bounds, { opacity: 0.7 }).addTo(map);
       })
       .catch(() => {
         // Same as Wind: an enhancement, not load-bearing — a failed fetch
@@ -984,8 +1055,7 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
 
     return () => {
       cancelled = true;
-      map.off("zoomend", syncHeatZoom);
-      heat?.remove();
+      overlay?.remove();
     };
   }, [toggles.temperature, mapReady]);
 

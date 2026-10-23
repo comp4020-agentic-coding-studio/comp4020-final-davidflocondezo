@@ -998,3 +998,82 @@ in character than the previous sparse version; confirmed Wind still works
 independently afterward (61 arrow markers, real station-named popup
 unaffected by the Temperature change); full spec suite green (10/10,
 after the same known-flaky SSE-stream test cleared on an isolated re-run).
+
+## Temperature layer: `leaflet.heat` replaced with a hand-rolled interpolated image
+
+After the Open-Meteo switch above, the user reported the heat map had
+regressed to "just a big square of colour ontop of australia" — not sparse
+blobs this time, a flat saturated block. Investigated live rather than
+guessing: pixel-inspecting the real canvas found 36% of pixels at zoom 4
+pinned to exactly the hottest gradient color, a literal flat region, not a
+visibility/opacity issue (ruling out the kind of bug the two earlier
+Temperature write-ups above both turned out to be).
+
+Root cause, found by reading `leaflet.heat`'s own bundled source directly
+rather than tuning parameters blind: `L.HeatLayer._redraw` stamps every
+point as a soft circle and **sums** overlapping circles' intensity — it's a
+density-clustering algorithm ("more points here = hotter"), correct for
+sparse event data, but wrong for data where every point already carries a
+real value to be *blended*, not counted. BOM's old ~60-station grid never
+exposed this (points were ~300km+ apart, circles rarely overlapped).
+Open-Meteo's dense 644-point grid (~165km spacing) overlaps heavily,
+especially zoomed out where more points fit on screen — summed intensity
+blows past the gradient's `max` and flattens whole regions to one color.
+
+Tried tuning around it before concluding the algorithm itself was the
+wrong fit: a fixed smaller radius (60→40→25→15→10) either still saturated
+or, once small enough to stop overlapping, rendered as isolated unblended
+dots with visible quarter-circle "waffle" edges from each point's own
+shadow-stamp shape; a radius rescaled per zoom to match on-screen grid
+spacing reduced saturation but kept the waffle artifacts and an inflated
+"everything looks hot" bias from the residual summing; tiny radius with
+huge blur dropped opacity below visibility entirely. No parameter
+combination worked at both normal and zoomed-out views at once, because
+the bug was the summing, not any one setting.
+
+Presented this finding and three fix options to the user; chosen: drop
+`leaflet.heat` for Temperature entirely and render a custom
+bilinear-interpolated image instead. Since Open-Meteo's grid is a perfect
+regular lat/lon rectangle, standard bilinear interpolation between the 4
+nearest grid points gives a correct, smooth value anywhere — it blends,
+never sums, so it cannot saturate by construction. `WeatherMap.tsx` now
+reshapes the flat `/api/bom/temperature` response into a 2D grid (row-major,
+matching `lib/temperature.ts`'s own `gridPoints()` generation order),
+builds an offscreen `<canvas>` where each pixel is bilinearly sampled and
+colored via the existing 11-stop RGB scale (unchanged — only how it's
+applied per-pixel changed, from handing it to `leaflet.heat`'s `gradient`
+option to a manual linear interpolation between adjacent stops), and places
+the resulting data URL on the map with Leaflet's own `L.imageOverlay`
+(core Leaflet, not a plugin) stretched to the grid's exact lat/lon bounds.
+This also removed the `leaflet.heat`/`@types/leaflet.heat` dependency
+entirely (confirmed unused elsewhere via grep) along with the `window.L`
+ES-module workaround that existed solely to reach the plugin's
+global-patching behavior, and the `maxZoom`/`zoomend`-sync hack from the
+earlier zoom-decay fix — none of that is relevant to a plain image overlay,
+which Leaflet already scales and repositions on pan/zoom like any other
+layer (the same way the existing radar tile layer already behaves).
+
+A related correctness bug surfaced while implementing this: reshaping a
+flat array back into a row-major grid requires every position to be
+preserved, but `getTemperatureObservations()` had been filtering out
+missing readings — doing that would silently shift every later point into
+the wrong grid cell. Fixed by changing `TemperatureObservation.tempC` to
+`number | null` and preserving the full array length/order; `null` entries
+are filled by averaging their immediate grid neighbors (falling back to
+the grid's overall average if all neighbors are also missing) before
+interpolation, rather than being coerced to 0.
+
+**Verified:** `pnpm exec tsc --noEmit` clean; live Playwright screenshots
+at both the app's normal zoom (7) and zoomed further out (the view where
+the old bug was worst) show a smooth, continuous gradient with no flat
+saturated block and no visible per-grid-cell boundaries — confirmed via
+the `.leaflet-image-layer` element rendering (count: 1) with zero
+console/page errors; spot-checked the live color scale against the
+current data's actual hottest (39.5°C → RGB [176,76,6], correctly between
+the 35-40/40-45 deep-orange stops) and coolest (6.4°C → RGB [64,181,165],
+correctly in the 5-10 teal/green band) points; confirmed Wind is
+unaffected (separate code path, untouched by this change — a live check
+during this verification round hit a 403 from BOM's own API directly,
+unrelated to any code here, consistent with the burst-rate-limit behavior
+already documented for that API elsewhere in this file); full spec suite
+green (10/10).
