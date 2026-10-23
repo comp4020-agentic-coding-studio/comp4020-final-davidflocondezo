@@ -1150,3 +1150,44 @@ confirm the coastline boundary (checked directly against Sydney/
 Wollongong) now hugs the real coast more precisely than before the fix;
 re-checked the Tasmania crop specifically, since the 1° latitude error was
 largest at the grid's southern edge; full spec suite green (10/10).
+
+**Follow-up — still offset after the bounds fix, a second, different bug.**
+The user reported the heat color was still shifted down slightly even
+after the grid-edge fix above. Investigated rather than assuming that fix
+was simply incomplete: read Leaflet's own `ImageOverlay._reset()` source
+directly and confirmed `L.imageOverlay` does a flat corner-to-corner
+stretch — it projects only the bounds' two corner points, then CSS-
+stretches the raw bitmap between them, with no per-pixel reprojection of
+the image's own content. The map renders in Web Mercator, where latitude
+lines are *not* evenly spaced in screen pixels (spacing grows away from
+the equator), but `buildTemperatureImage`'s rows were laid out evenly
+spaced in plain degrees (matching the Open-Meteo grid) and then handed to
+`imageOverlay` to be stretched as if already Mercator-even.
+
+Quantified rather than assumed: over Australia's real span (lat -10° to
+-43°), the gap between "linear in degrees" and "linear in true Mercator"
+peaks at ~3.8% of the image's height, centered right around lat -27° to
+-35° — almost exactly the Sydney/Canberra/Melbourne band, which is why the
+earlier reports specifically described that area as shifted rather than a
+uniform, easy-to-spot offset. This is a distinct bug from the grid-edge
+one above: that one was a constant error in where the whole image's bounds
+sit; this one is a latitude-dependent distortion of the image's own
+internal content, present even with perfectly correct bounds. Longitude
+needed no equivalent fix, since Mercator's x-axis is already linear in
+longitude.
+
+Fixed by adding `mercatorY`/`latAtMercatorFraction` helpers to
+`WeatherMap.tsx` and using them to convert each output pixel row's
+fractional position to a true latitude (then to a grid-row index) before
+sampling, instead of assuming linear-degree spacing — and applying the
+same conversion to the Australia outline's clip-path latitude mapping, so
+the color data and the coastline mask stay aligned with each other.
+
+**Verified:** typecheck clean; live screenshot at the app's normal zoom
+shows the coastline boundary hugging the real coast from Newcastle through
+Sydney and Wollongong noticeably more tightly than before this fix;
+zoomed-out screenshot still reads as Australia's correct silhouette; the
+Tasmania crop looks essentially unchanged from before this fix, as
+predicted (the Mercator/degree gap returns to zero at the grid's own
+top/bottom bounds, so the correction is concentrated in the mid-latitude
+band, not the edges); full spec suite green (10/10).

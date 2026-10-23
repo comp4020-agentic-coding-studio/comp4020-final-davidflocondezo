@@ -342,6 +342,32 @@ function bilinearSample(grid: number[][], latIndex: number, lonIndex: number): n
 // existing radar tile layer already does.
 const TEMP_IMAGE_SCALE = 12;
 
+// L.imageOverlay does a flat corner-to-corner stretch of the raw image
+// (confirmed by reading leaflet's ImageOverlay._reset(), which only
+// projects the bounds' two corners and CSS-stretches the bitmap between
+// them — no per-pixel reprojection). The map itself renders in Web
+// Mercator, where latitude lines are NOT evenly spaced in screen pixels —
+// spacing grows moving away from the equator. Building the image with rows
+// evenly spaced in plain degrees (matching the Open-Meteo grid) and
+// stretching it as if already Mercator-even introduces a real,
+// latitude-dependent vertical misalignment — over Australia's ~33° span
+// this peaks at ~3.8% of the image's height, right around the
+// Sydney/Melbourne band, which is what made the heat color look "shifted
+// down" there specifically. These two helpers convert between plain
+// latitude and Web Mercator's y coordinate so image rows (and the
+// Australia clip path below) can be laid out Mercator-even instead.
+function mercatorY(latDeg: number): number {
+  const lat = (latDeg * Math.PI) / 180;
+  return Math.log(Math.tan(Math.PI / 4 + lat / 2));
+}
+
+function latAtMercatorFraction(f: number, latTop: number, latBottom: number): number {
+  const yTop = mercatorY(latTop);
+  const yBottom = mercatorY(latBottom);
+  const y = yTop + f * (yBottom - yTop);
+  return ((2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180) / Math.PI;
+}
+
 // Builds the Temperature heat image as a data URL. Reshapes the flat,
 // row-major /api/bom/temperature response into a 2D grid (a null reading —
 // rare, since this is model data rather than a real station that can go
@@ -377,7 +403,11 @@ function buildTemperatureImage(observations: TemperatureObservation[]): string {
     // Row 0 of `grid` is the northernmost latitude (gridPoints() starts at
     // GRID_LAT_RANGE.max), and an image overlay's top row maps to its
     // bounds' north edge — so y=0 already lines up with row 0, no flip.
-    const latIndex = (y / (height - 1)) * (GRID_ROWS - 1);
+    // y is spaced Mercator-even (matching how imageOverlay stretches this
+    // image onto the map), so it's converted through true latitude first
+    // rather than assumed linear in degrees.
+    const lat = latAtMercatorFraction(y / (height - 1), GRID_LAT_RANGE.max, GRID_LAT_MIN);
+    const latIndex = (GRID_LAT_RANGE.max - lat) / GRID_LAT_RANGE.step;
     for (let x = 0; x < width; x++) {
       const lonIndex = (x / (width - 1)) * (GRID_COLS - 1);
       const tempC = bilinearSample(grid, latIndex, lonIndex);
@@ -399,10 +429,12 @@ function buildTemperatureImage(observations: TemperatureObservation[]): string {
   // treats disjoint subpaths as an OR), making everything else
   // transparent rather than erasing and redrawing.
   const path = new Path2D();
+  const mercYTop = mercatorY(GRID_LAT_RANGE.max);
+  const mercYBottom = mercatorY(GRID_LAT_MIN);
   for (const ring of AUSTRALIA_OUTLINE) {
     ring.forEach(([lon, lat], i) => {
       const x = ((lon - GRID_LON_RANGE.min) / (GRID_LON_MAX - GRID_LON_RANGE.min)) * (width - 1);
-      const y = ((GRID_LAT_RANGE.max - lat) / (GRID_LAT_RANGE.max - GRID_LAT_MIN)) * (height - 1);
+      const y = ((mercatorY(lat) - mercYTop) / (mercYBottom - mercYTop)) * (height - 1);
       if (i === 0) path.moveTo(x, y);
       else path.lineTo(x, y);
     });
