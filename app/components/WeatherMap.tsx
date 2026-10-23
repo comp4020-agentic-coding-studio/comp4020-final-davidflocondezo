@@ -930,6 +930,22 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
     let cancelled = false;
     let heat: L.HeatLayer | undefined;
 
+    // leaflet.heat decays each point's intensity by 1/2^(maxZoom - currentZoom)
+    // (capped at 12 levels) — built for density clustering across zoom
+    // levels, where fewer, farther-apart points should look fainter when
+    // zoomed out. That decay is wrong for this layer: tempC is an absolute
+    // reading, not a density count, and it should look the same regardless
+    // of zoom. Left at its default (the *map's* maxZoom, 18, vs. this app's
+    // zoom-7 view — an 11-level gap), every point decayed to ~0 intensity
+    // and the whole canvas rendered at the library's ~5% minimum-opacity
+    // floor — confirmed live via pixel inspection (max alpha 13/255 at any
+    // radius/blur) before finding this in leaflet.heat's own source, so no
+    // radius/blur tuning could have fixed it. Pinning the layer's own
+    // `maxZoom` option to the map's *current* zoom (updated on every zoom
+    // change below) makes the decay factor always 1 — full, correct
+    // intensity at whatever zoom the user is looking at.
+    const syncHeatZoom = () => heat?.setOptions({ maxZoom: map.getZoom() });
+
     void fetch("/api/bom/wind")
       .then((res) => (res.ok ? (res.json() as Promise<WindObservation[]>) : []))
       .then((observations) => {
@@ -937,9 +953,14 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
         const points: [number, number, number][] = observations
           .filter((obs) => obs.tempC !== undefined)
           .map((obs) => [obs.lat, obs.lon, obs.tempC as number]);
-        heat = Leaflet.heatLayer(points, { max: TEMP_MAX_C, gradient: TEMP_GRADIENT, radius: 60, blur: 40 }).addTo(
-          map,
-        );
+        heat = Leaflet.heatLayer(points, {
+          max: TEMP_MAX_C,
+          gradient: TEMP_GRADIENT,
+          radius: 60,
+          blur: 40,
+          maxZoom: map.getZoom(),
+        }).addTo(map);
+        map.on("zoomend", syncHeatZoom);
       })
       .catch(() => {
         // Same as Wind: an enhancement, not load-bearing — a failed fetch
@@ -948,6 +969,7 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
 
     return () => {
       cancelled = true;
+      map.off("zoomend", syncHeatZoom);
       heat?.remove();
     };
   }, [toggles.temperature, mapReady]);

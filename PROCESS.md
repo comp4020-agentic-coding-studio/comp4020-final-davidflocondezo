@@ -862,3 +862,54 @@ produced zero canvases; a screenshot visually confirming a real
 blue-to-orange gradient spanning the areas with data (Sydney, Canberra,
 Bendigo all distinctly colored, not just isolated dots); full spec suite
 green (10/10), unaffected — client-rendering only, no new route.
+
+**Follow-up — heat map rendered but was practically invisible:** the user
+reported "I cannot see the temperature heatmap." Live pixel inspection
+(reading the canvas's own `ImageData` rather than eyeballing a screenshot)
+showed the canvas genuinely had a heat layer drawing, but every pixel
+topped out at ~5% alpha — invisible against the base map at any reasonable
+radius/blur. Tried several radius/blur combinations (60/40 up to 150/80)
+live; all produced the identical ~5% ceiling, which ruled out "opacity is
+just too subtle" and pointed at something capping intensity itself before
+radius/blur were even applied.
+
+Root-caused by reading `leaflet.heat`'s own bundled source rather than
+guessing further: `L.HeatLayer._redraw` scales every point's intensity by
+`1/2^min(options.maxZoom - map.getZoom(), 12)` — a decay meant for density
+clustering (so a cluster of points looks appropriately fainter when zoomed
+out across many zoom levels), not for an absolute-value layer like
+temperature. `options.maxZoom` had been left unset, defaulting to the
+*map's* own `maxZoom` (Leaflet's default, 18) — an 11-level gap from this
+app's zoom-7 view, decaying every point to near-zero before gradient or
+radius ever mattered. Confirmed via an isolated single-point test in the
+live browser: the same point scored max alpha 13/255 (~5%) with the
+layer's default `maxZoom`, and 164/255 (~64%) with `maxZoom` pinned to the
+current zoom — an over 10x difference from one option, nothing to do with
+radius/blur.
+
+Fix: the effect now creates the heat layer with `maxZoom: map.getZoom()`
+and keeps it in sync via a `zoomend` listener (`heat.setOptions({ maxZoom:
+map.getZoom() })`), removed on cleanup alongside the layer itself — so the
+decay factor is always 1 (no decay) at whatever zoom the user is actually
+looking at, regardless of how far it is from Leaflet's internal max zoom.
+Radius/blur were reverted back to their original, sensible 60/40 (the
+150/80 tried while chasing the wrong cause was unnecessary once the real
+bug was fixed).
+
+**Verified:** live pixel inspection of the real app (not an isolated test)
+confirmed non-zero alpha across ~32% of the canvas with max alpha 152/255
+(~60%) against a full ~59-station grid fetch, and a screenshot showing
+clearly visible blue/white heat blobs spread across multiple areas of the
+map — a real difference from the pre-fix screenshot, which showed nothing
+outside the unrelated always-on warning circles. Typecheck clean, full
+spec suite green (10/10).
+
+This diagnosis took several live-test cycles because each one restarted
+the dev server, and each restart forces `lib/wind.ts`'s full 168-point
+grid sweep to re-run cold — which repeatedly tripped BOM's burst rate
+limit (documented in `lib/wind.ts`'s own comments) and produced partial,
+misleading results (e.g. 9 stations instead of ~55, all clustered in one
+region) that looked like new bugs before turning out to just be a smaller,
+incomplete fetch. Letting BOM's limiter cool down and the 10-minute cache
+expire naturally, instead of restarting again, eventually produced a
+clean full-grid result to verify against.
