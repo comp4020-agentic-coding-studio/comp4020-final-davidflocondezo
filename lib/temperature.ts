@@ -35,6 +35,17 @@ export const GRID_LON_RANGE = { min: 113, max: 154, step: 1.5 };
 export const GRID_COLS = Math.floor((GRID_LON_RANGE.max - GRID_LON_RANGE.min) / GRID_LON_RANGE.step) + 1;
 export const GRID_ROWS = Math.floor((GRID_LAT_RANGE.max - GRID_LAT_RANGE.min) / GRID_LAT_RANGE.step) + 1;
 
+// The configured min/max span isn't an exact multiple of `step` (34 / 1.5
+// and 41 / 1.5 both have remainders), so gridPoints()'s loop never actually
+// reaches GRID_LAT_RANGE.min / GRID_LON_RANGE.max — it stops one short step
+// early. These are the grid's real edges (the last value the loop visits),
+// used instead of the nominal min/max wherever the grid's extent needs to
+// line up exactly with its real sample positions (e.g. placing/clipping an
+// image built from this grid) — using the nominal range there would stretch
+// the image over up to a full step of space with no actual data.
+export const GRID_LAT_MIN = GRID_LAT_RANGE.max - (GRID_ROWS - 1) * GRID_LAT_RANGE.step;
+export const GRID_LON_MAX = GRID_LON_RANGE.min + (GRID_COLS - 1) * GRID_LON_RANGE.step;
+
 // 90 minutes: temperature doesn't swing fast enough to need more frequent
 // refreshing, and it keeps the daily call budget close to Open-Meteo's
 // free-tier cap (see module comment) rather than refreshing needlessly

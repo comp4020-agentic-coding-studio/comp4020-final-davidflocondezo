@@ -1122,3 +1122,31 @@ not a rectangle; a cropped, 3x-zoomed screenshot of the Tasmania region
 confirms its ring is independently clipped to its own island outline, not
 merged into or excluded from the mainland's mask; full spec suite green
 (10/10); confirmed no leftover debug code via grep.
+
+**Follow-up — the clipped heat map was offset down slightly.** The user
+noticed the colored region sat a little below where it should against the
+real coastline. Root cause: `lib/temperature.ts`'s grid steps 1.5° over a
+34° latitude span and a 41° longitude span — neither span is an exact
+multiple of 1.5, so `gridPoints()`'s loop stops one step short of the
+*nominal* `GRID_LAT_RANGE.min`/`GRID_LON_RANGE.max` rather than reaching
+them exactly (confirmed by running the loop: the real southernmost sampled
+row is lat -43, not the configured -44; the real easternmost column is
+lon 153.5, not 154). Both the `imageOverlay`'s bounds and the Australia
+outline's lon/lat-to-pixel clip-path math had been using the nominal range
+directly, stretching the image (and its clip mask) over up to 1° of space
+with no actual sample data — shifting the true content down and very
+slightly left of where it was drawn.
+
+Fixed by adding `GRID_LAT_MIN`/`GRID_LON_MAX` to `lib/temperature.ts`,
+derived with the same arithmetic that already produces `GRID_ROWS`/
+`GRID_COLS` (the grid's real edges, not the configured ones), and using
+those instead of the nominal `GRID_LAT_RANGE.min`/`GRID_LON_RANGE.max`
+everywhere `WeatherMap.tsx` places or clips the rendered image — the
+overlay bounds and the clip-path pixel mapping now agree on the exact same
+coordinate space the data actually occupies.
+
+**Verified:** typecheck clean; live screenshots at both zoom levels
+confirm the coastline boundary (checked directly against Sydney/
+Wollongong) now hugs the real coast more precisely than before the fix;
+re-checked the Tasmania crop specifically, since the 1° latitude error was
+largest at the grid's southern edge; full spec suite green (10/10).

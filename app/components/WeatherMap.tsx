@@ -8,7 +8,9 @@ import type { Strike } from "../../lib/lightning.ts";
 import { nearestStation } from "../../lib/radarStations.ts";
 import {
   GRID_COLS,
+  GRID_LAT_MIN,
   GRID_LAT_RANGE,
+  GRID_LON_MAX,
   GRID_LON_RANGE,
   GRID_ROWS,
   type TemperatureObservation,
@@ -399,8 +401,8 @@ function buildTemperatureImage(observations: TemperatureObservation[]): string {
   const path = new Path2D();
   for (const ring of AUSTRALIA_OUTLINE) {
     ring.forEach(([lon, lat], i) => {
-      const x = ((lon - GRID_LON_RANGE.min) / (GRID_LON_RANGE.max - GRID_LON_RANGE.min)) * (width - 1);
-      const y = ((GRID_LAT_RANGE.max - lat) / (GRID_LAT_RANGE.max - GRID_LAT_RANGE.min)) * (height - 1);
+      const x = ((lon - GRID_LON_RANGE.min) / (GRID_LON_MAX - GRID_LON_RANGE.min)) * (width - 1);
+      const y = ((GRID_LAT_RANGE.max - lat) / (GRID_LAT_RANGE.max - GRID_LAT_MIN)) * (height - 1);
       if (i === 0) path.moveTo(x, y);
       else path.lineTo(x, y);
     });
@@ -1065,8 +1067,8 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
       .then((observations) => {
         if (cancelled || observations.length === 0) return;
         const bounds: L.LatLngBoundsExpression = [
-          [GRID_LAT_RANGE.min, GRID_LON_RANGE.min],
-          [GRID_LAT_RANGE.max, GRID_LON_RANGE.max],
+          [GRID_LAT_MIN, GRID_LON_RANGE.min],
+          [GRID_LAT_RANGE.max, GRID_LON_MAX],
         ];
         overlay = Leaflet.imageOverlay(buildTemperatureImage(observations), bounds, { opacity: 0.7 }).addTo(map);
       })
