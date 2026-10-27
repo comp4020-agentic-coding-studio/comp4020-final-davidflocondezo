@@ -4,7 +4,9 @@ import "leaflet/dist/leaflet.css";
 import type L from "leaflet";
 import { useEffect, useRef, useState } from "react";
 import { AUSTRALIA_OUTLINE } from "../../lib/australiaOutline.ts";
+import { haversineKm } from "../../lib/geo.ts";
 import type { Strike } from "../../lib/lightning.ts";
+import { MAJOR_CITIES } from "../../lib/majorCities.ts";
 import { nearestStation } from "../../lib/radarStations.ts";
 import {
   GRID_COLS,
@@ -17,6 +19,7 @@ import {
   type TemperatureObservation,
 } from "../../lib/temperature.ts";
 import type { WarningArea } from "../../lib/warningAreas.ts";
+import { weatherIconSvg } from "../../lib/weatherIcons.ts";
 import type { WindObservation } from "../../lib/wind.ts";
 import LayersPanel, { type LayerToggles } from "./LayersPanel.tsx";
 import TemperatureDaySlider from "./TemperatureDaySlider.tsx";
@@ -25,6 +28,14 @@ import TemperatureLegend from "./TemperatureLegend.tsx";
 export interface WeatherMapProps {
   lat: number;
   lon: number;
+  // This place's own geohash, so its label marker (see placeMarkerPopupHtml)
+  // can query /api/bom/weather the same way the major-city markers do,
+  // without re-deriving a geohash from lat/lon here (the one the page
+  // already resolved — via search, geolocation, or the ?place= URL — can
+  // carry a BOM-search-provided geohash that doesn't round-trip exactly
+  // through ngeohash.encode(lat, lon)).
+  placeName: string;
+  placeGeohash: string;
 }
 
 interface Report {
@@ -57,26 +68,6 @@ const reportOpacity = (createdAt: string): number => {
   const age = Date.now() - new Date(createdAt).getTime();
   return Math.max(0, 1 - age / REPORT_LIFETIME_MS);
 };
-
-// Marks the resolved location the weather/radar/forecast on screen are for.
-// A divIcon, like reportIcon below, rather than Leaflet's default L.Icon:
-// Leaflet's default marker image (marker-icon.png etc.) is built assuming a
-// plain <script> include, so its relative image paths 404 once Leaflet is
-// loaded through a bundler (this app's dynamic import()) instead — the
-// broken-image box this was replacing. Blue, not amber, so it's never
-// mistaken for a community report pin (reportIcon below).
-function locationIcon(Leaflet: typeof L): L.DivIcon {
-  return Leaflet.divIcon({
-    className: "",
-    html: `<div style="
-      width: 14px; height: 14px; border-radius: 50%;
-      background: #2f6fed; border: 2px solid #ffffff;
-      box-shadow: 0 0 0 1px #2f6fed;
-    "></div>`,
-    iconSize: [14, 14],
-    iconAnchor: [7, 7],
-  });
-}
 
 // Plain amber circle, not the red/triangle styling an official warning would
 // use, so a community report is never visually mistaken for one (see
@@ -164,6 +155,83 @@ function warningPopupHtml(warning: WarningArea, placeName: string): string {
   `;
 }
 
+// A text label beneath a small dot, not just a dot — these markers exist so a
+// viewer can identify a place on the map at a glance, which a plain dot
+// (locationIcon above) can't do. white-space: nowrap plus the anchor sitting
+// at the dot (not the label) keeps the text from wrapping or shifting the
+// marker's own position as it's added/removed.
+function placeLabelIcon(Leaflet: typeof L, name: string, color: string): L.DivIcon {
+  return Leaflet.divIcon({
+    className: "",
+    html: `
+      <div style="display: flex; flex-direction: column; align-items: center; white-space: nowrap;">
+        <div style="width: 10px; height: 10px; border-radius: 50%; background: ${color}; border: 2px solid #ffffff; box-shadow: 0 0 0 1px ${color};"></div>
+        <span style="background: rgba(255,255,255,0.85); padding: 0 4px; border-radius: 2px; font-size: 0.8em; font-weight: bold; margin-top: 2px;">
+          ${escapeHtml(name)}
+        </span>
+      </div>
+    `,
+    iconSize: [0, 0],
+    iconAnchor: [0, 5],
+  });
+}
+
+interface PlaceWeatherSummary {
+  currentTempC: number | null;
+  overnightMinC: number | null;
+  tomorrowMaxC: number | null;
+  iconDescriptor: string | null;
+}
+
+// Shape of the one /api/bom/weather response this reads from (see
+// lib/bom.ts's getWeather) — narrowed to just the fields this popup needs,
+// not a full type for BOM's response (which the rest of the app deliberately
+// leaves as `unknown`, see app/page.tsx).
+interface BomWeatherResponse {
+  observations?: { data?: { temp?: number } };
+  forecast?: { data?: { icon_descriptor?: string | null; now?: { now_label?: string; temp_now?: number } }[] };
+}
+
+// `now` (overnight min vs. tomorrow's max, labeled by BOM itself) only
+// exists on today's forecast entry (index 0) — confirmed live, see
+// lib/bom.ts's module comment on this API being reverse-engineered rather
+// than documented. tomorrowMaxC therefore comes from day 1's temp_max, the
+// plain daily figure, rather than from any `now` block.
+function summarizeWeather(body: BomWeatherResponse): PlaceWeatherSummary {
+  const today = body.forecast?.data?.[0];
+  const tomorrow = body.forecast?.data?.[1] as { temp_max?: number } | undefined;
+  return {
+    currentTempC: typeof body.observations?.data?.temp === "number" ? body.observations.data.temp : null,
+    overnightMinC: typeof today?.now?.temp_now === "number" ? today.now.temp_now : null,
+    tomorrowMaxC: typeof tomorrow?.temp_max === "number" ? tomorrow.temp_max : null,
+    iconDescriptor: today?.icon_descriptor ?? null,
+  };
+}
+
+function placePopupLoadingHtml(name: string): string {
+  return `<strong>${escapeHtml(name)}</strong><br/><span style="color: #555;">Loading…</span>`;
+}
+
+function placePopupErrorHtml(name: string): string {
+  return `<strong>${escapeHtml(name)}</strong><br/><span style="color: crimson;">Couldn't load weather.</span>`;
+}
+
+function placePopupContentHtml(name: string, summary: PlaceWeatherSummary): string {
+  const row = (label: string, value: number | null): string =>
+    value === null ? "" : `<div>${escapeHtml(label)}: <strong>${value}°C</strong></div>`;
+  return `
+    <div style="display: flex; align-items: center; gap: 6px;">
+      ${weatherIconSvg(summary.iconDescriptor)}
+      <strong>${escapeHtml(name)}</strong>
+    </div>
+    <div style="margin-top: 4px;">
+      ${row("Current", summary.currentTempC)}
+      ${row("Overnight min", summary.overnightMinC)}
+      ${row("Tomorrow's max", summary.tomorrowMaxC)}
+    </div>
+  `;
+}
+
 // A neutral blue-gray, distinct from both the amber community-report
 // convention and the severity-colored (yellow->red) warning circles — these
 // are purely informational, not a hazard indicator.
@@ -178,6 +246,14 @@ const INFO_CIRCLE_OPTIONS: L.CircleMarkerOptions = {
 // Arbitrary, round distances giving a quick sense of scale around the
 // selected location — not tied to any data source.
 const RING_RADII_KM = [50, 100, 150];
+
+// How close the selected place has to land to a major city's own marker
+// before that city's label is hidden — confirmed live: searching/geolocating
+// to within a capital city (e.g. Canberra) placed the two markers' text
+// labels directly on top of each other, illegible either way. 5km comfortably
+// covers "this is the same city" without hiding a city's marker just because
+// a *different*, nearby town was selected.
+const CITY_OVERLAP_KM = 5;
 
 // BOM's own public convention for radar range: ~100km is "generally
 // reliable", ~150-200km is the general limit of useful coverage before
@@ -615,13 +691,59 @@ type ReportPopupElement = HTMLElement & {
   setLayoutUpdateCallback: (callback: () => void) => void;
 };
 
+// Binds a label marker's popup to fetch /api/bom/weather lazily, on first
+// open, rather than for every city up front — 8 cities + the selected place
+// is a small enough number that this is mostly about not surprising the
+// visitor with a burst of background requests on load, the same reasoning
+// Wind/Temperature (also fetch-on-toggle, not fetch-on-mount) already follow.
+// A result is cached per geohash on the marker itself so reopening the same
+// popup doesn't re-fetch.
+function bindPlacePopup(Leaflet: typeof L, marker: L.Marker, name: string, geohash: string): void {
+  let cachedSummary: PlaceWeatherSummary | undefined;
+  const popup = Leaflet.popup().setContent(placePopupLoadingHtml(name));
+  marker.bindPopup(popup);
+  // The selected place's marker calls this again on every new selection
+  // (see the lat/lon/placeName/placeGeohash effect below) rather than being
+  // bound once like a city marker — without clearing the previous call's
+  // listener first, "popupopen" handlers would stack, each closure still
+  // holding the *previous* place's name/geohash/cache.
+  marker.off("popupopen");
+  marker.on("popupopen", () => {
+    if (cachedSummary) {
+      popup.setContent(placePopupContentHtml(name, cachedSummary));
+      return;
+    }
+    popup.setContent(placePopupLoadingHtml(name));
+    void fetch(`/api/bom/weather?geohash=${geohash}`)
+      .then((res) => (res.ok ? (res.json() as Promise<BomWeatherResponse>) : Promise.reject(new Error(String(res.status)))))
+      .then((body) => {
+        cachedSummary = summarizeWeather(body);
+        popup.setContent(placePopupContentHtml(name, cachedSummary));
+      })
+      .catch(() => {
+        popup.setContent(placePopupErrorHtml(name));
+      });
+  });
+}
+
 // Leaflet needs `window`, so this only ever runs client-side (see the
 // dynamic(..., { ssr: false }) import in app/page.tsx).
-export default function WeatherMap({ lat, lon }: WeatherMapProps) {
+export default function WeatherMap({ lat, lon, placeName, placeGeohash }: WeatherMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const leafletRef = useRef<typeof L | null>(null);
   const radarLayerRef = useRef<L.TileLayer | null>(null);
+  // The selected place's own labeled marker — kept as a ref (not recreated
+  // every render) so its position/popup can be updated in place by the
+  // effect below when `lat`/`lon`/`placeName`/`placeGeohash` change, the same
+  // pattern the plain location dot (locationIcon) already uses for its own
+  // setView effect further down.
+  const placeMarkerRef = useRef<L.Marker | null>(null);
+  // Each major city's own marker, keyed by name — so the place-change effect
+  // below can hide whichever one the selected place has landed on top of
+  // (see CITY_OVERLAP_KM), without recreating every city marker on each
+  // selection.
+  const cityMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   // Every report seen so far (seed fetch + SSE), regardless of whether it's
   // currently inside the visible map — the source of truth for re-filtering
   // on pan/zoom without another round trip.
@@ -827,15 +949,28 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
         attribution: "© OpenStreetMap contributors",
       }).addTo(map);
 
-      // interactive: false — this marker has no popup of its own, but
-      // Leaflet renders markers in a pane above vector layers (circles,
-      // polygons) by default. Without this, a warning circle (added below)
-      // whose place happens to be very close to the selected location sits
-      // visually and interactively underneath this dot, so a real click
-      // there hits the marker's own DOM element first — which has no
-      // listener — and falls through to the map's default click (confirmed:
-      // this opened "new community report" instead of the warning popup).
-      L.marker([lat, lon], { icon: locationIcon(L), interactive: false }).addTo(map);
+      // Labeled and clickable (unlike the plain dot this replaced) so the
+      // selected place can show its own current/overnight-min/tomorrow's-max
+      // popup the same way a major city's marker does (bindPlacePopup) — set
+      // up once here; the effect below (keyed on lat/lon/placeName/
+      // placeGeohash) moves it and refreshes its label/popup on every later
+      // change instead of recreating it.
+      const placeMarker = L.marker([lat, lon], { icon: placeLabelIcon(L, placeName, "#2f6fed") }).addTo(map);
+      bindPlacePopup(L, placeMarker, placeName, placeGeohash);
+      placeMarkerRef.current = placeMarker;
+
+      // A fixed set of state/territory capitals (lib/majorCities.ts), each
+      // with the same labeled, clickable marker as the selected place above
+      // — created once here since the list never changes, unlike the place
+      // marker which moves with the user's selection. Hidden individually by
+      // the place-change effect below when the selection lands on the same
+      // city (see CITY_OVERLAP_KM).
+      for (const city of MAJOR_CITIES) {
+        const cityMarker = L.marker([city.lat, city.lon], { icon: placeLabelIcon(L, city.name, "#555") });
+        bindPlacePopup(L, cityMarker, city.name, city.geohash);
+        if (haversineKm(lat, lon, city.lat, city.lon) > CITY_OVERLAP_KM) cityMarker.addTo(map);
+        cityMarkersRef.current.set(city.name, cityMarker);
+      }
 
       map.on("moveend", () => renderVisibleReports(L, map));
 
@@ -965,8 +1100,28 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
   }, []);
 
   useEffect(() => {
-    mapRef.current?.setView([lat, lon]);
-  }, [lat, lon]);
+    const map = mapRef.current;
+    map?.setView([lat, lon]);
+    const Leaflet = leafletRef.current;
+    const marker = placeMarkerRef.current;
+    if (!Leaflet || !map || !marker) return;
+    marker.setLatLng([lat, lon]);
+    marker.setIcon(placeLabelIcon(Leaflet, placeName, "#2f6fed"));
+    bindPlacePopup(Leaflet, marker, placeName, placeGeohash);
+
+    // Re-evaluate every city's overlap with the newly selected place — a
+    // city marker the previous selection hid (because it *was* that city)
+    // needs to reappear once the selection moves away from it, and vice
+    // versa (see CITY_OVERLAP_KM).
+    for (const city of MAJOR_CITIES) {
+      const cityMarker = cityMarkersRef.current.get(city.name);
+      if (!cityMarker) continue;
+      const overlapping = haversineKm(lat, lon, city.lat, city.lon) <= CITY_OVERLAP_KM;
+      const onMap = map.hasLayer(cityMarker);
+      if (overlapping && onMap) map.removeLayer(cityMarker);
+      else if (!overlapping && !onMap) cityMarker.addTo(map);
+    }
+  }, [lat, lon, placeName, placeGeohash]);
 
   // Radar: toggles the already-constructed radarLayerRef on/off, rather
   // than constructing/destroying a new tile layer each time (which would

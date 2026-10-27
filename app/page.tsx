@@ -170,7 +170,7 @@ function Home() {
             {place.name}
             {place.state ? `, ${place.state}` : ""}
           </h2>
-          <WeatherMap lat={place.lat} lon={place.lon} />
+          <WeatherMap lat={place.lat} lon={place.lon} placeName={place.name} placeGeohash={place.geohash} />
           <p>Nearest radar: {station.name}</p>
 
           {weather?.warnings?.data && weather.warnings.data.length > 0 && (
