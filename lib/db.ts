@@ -3,9 +3,11 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-// /data is the one volume that survives a restart or redeploy (fly.toml).
-// Locally this falls back to a gitignored file next to the repo.
-const path = process.env.DATABASE_PATH ?? "/data/app.db";
+// /data is the one volume that survives a restart or redeploy (fly.toml),
+// set via DATABASE_PATH there. Locally (no env var) /data doesn't exist and
+// isn't writable, so this falls back to a gitignored file next to the repo
+// instead (see .gitignore's "data/" entry).
+const path = process.env.DATABASE_PATH ?? "./data/app.db";
 
 // The connection (and schema setup below) is created lazily, on first real
 // use, rather than at module load. `next build`'s "Collecting page data"
