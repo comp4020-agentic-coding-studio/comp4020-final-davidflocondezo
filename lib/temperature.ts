@@ -76,23 +76,70 @@ export interface TemperatureObservation {
   tempC: number | null;
 }
 
+// The Temperature layer's color scale, shared between the map's own heat
+// image (WeatherMap.tsx's buildTemperatureImage, which interpolates between
+// these) and the legend (TemperatureLegend.tsx, which renders them as a
+// gradient bar) — one scale, so the legend can never drift from what the map
+// actually shows.
+//
+// Each stop sits at its band's *lower* boundary (<0, 0-5, 5-10, ... 45+),
+// smoothly interpolated between neighbors — a continuous gradient (matching
+// BOM's own temperature map look), not discrete painted bands.
+export const TEMP_COLOR_STOPS: { tempC: number; rgb: [number, number, number] }[] = [
+  { tempC: -5, rgb: [16, 61, 98] }, // <0
+  { tempC: 0, rgb: [14, 118, 146] }, // 0-5
+  { tempC: 5, rgb: [46, 172, 165] }, // 5-10
+  { tempC: 10, rgb: [109, 204, 166] }, // 10-15
+  { tempC: 15, rgb: [175, 239, 175] }, // 15-20
+  { tempC: 20, rgb: [238, 254, 181] }, // 20-25
+  { tempC: 25, rgb: [244, 225, 112] }, // 25-30
+  { tempC: 30, rgb: [234, 187, 71] }, // 30-35
+  { tempC: 35, rgb: [203, 116, 34] }, // 35-40
+  { tempC: 40, rgb: [173, 71, 3] }, // 40-45
+  { tempC: 45, rgb: [113, 25, 4] }, // 45+
+];
+
+// The day slider's range: today plus the next 6 days (7 days total), the
+// max Open-Meteo's free forecast endpoint returns 100% of without any
+// special tier.
+export const FORECAST_DAYS = 7;
+
 interface OpenMeteoResult {
   latitude: number;
   longitude: number;
   current?: { temperature_2m?: number };
+  daily?: { temperature_2m_max?: number[] };
 }
 
-export async function getTemperatureObservations(): Promise<TemperatureObservation[]> {
-  return cached("temperature-observations", CACHE_TTL_MS, async () => {
+// Both `current` (today's live reading) and `daily` (each day's forecast
+// high, including today's) come back from one request per point — asking
+// for both doesn't cost extra Open-Meteo calls (still one call per point;
+// see module comment), so the whole week is fetched and cached together
+// rather than once per slider position.
+async function fetchGrid(): Promise<OpenMeteoResult[]> {
+  return cached("temperature-grid", CACHE_TTL_MS, async () => {
     const points = gridPoints();
     const latitude = points.map((p) => p.lat).join(",");
     const longitude = points.map((p) => p.lon).join(",");
-    const res = await fetch(`${API_BASE}?latitude=${latitude}&longitude=${longitude}&current=temperature_2m`);
+    const res = await fetch(
+      `${API_BASE}?latitude=${latitude}&longitude=${longitude}&current=temperature_2m&daily=temperature_2m_max&forecast_days=${FORECAST_DAYS}&timezone=auto`,
+    );
     if (!res.ok) throw new Error(`Open-Meteo request failed: ${res.status}`);
-    const body = (await res.json()) as OpenMeteoResult[];
-    return points.map((p, i) => {
-      const tempC = body[i]?.current?.temperature_2m;
-      return { lat: p.lat, lon: p.lon, tempC: typeof tempC === "number" ? tempC : null };
-    });
+    return (await res.json()) as OpenMeteoResult[];
+  });
+}
+
+// dayOffset 0 (today) uses the live `current` reading, matching what the
+// rest of the app (e.g. the page's "Current temperature" line) already
+// shows for today — days 1-6 have no "current" reading yet, so those use
+// that day's forecast high instead, the only single-number figure Open-Meteo
+// provides per future day.
+export async function getTemperatureObservations(dayOffset = 0): Promise<TemperatureObservation[]> {
+  const points = gridPoints();
+  const body = await fetchGrid();
+  return points.map((p, i) => {
+    const result = body[i];
+    const tempC = dayOffset === 0 ? result?.current?.temperature_2m : result?.daily?.temperature_2m_max?.[dayOffset];
+    return { lat: p.lat, lon: p.lon, tempC: typeof tempC === "number" ? tempC : null };
   });
 }

@@ -13,11 +13,14 @@ import {
   GRID_LON_MAX,
   GRID_LON_RANGE,
   GRID_ROWS,
+  TEMP_COLOR_STOPS,
   type TemperatureObservation,
 } from "../../lib/temperature.ts";
 import type { WarningArea } from "../../lib/warningAreas.ts";
 import type { WindObservation } from "../../lib/wind.ts";
 import LayersPanel, { type LayerToggles } from "./LayersPanel.tsx";
+import TemperatureDaySlider from "./TemperatureDaySlider.tsx";
+import TemperatureLegend from "./TemperatureLegend.tsx";
 
 export interface WeatherMapProps {
   lat: number;
@@ -275,29 +278,6 @@ function windArrowIcon(Leaflet: typeof L, speedKmh: number, direction: string): 
 function windPopupHtml(obs: { stationName: string; speedKmh: number; direction: string }): string {
   return `${escapeHtml(obs.stationName)}: ${obs.speedKmh} km/h from the ${escapeHtml(obs.direction)}`;
 }
-
-// A separate color scale from windColor above, even though both happen to
-// land in a similar hue range, since they answer different questions
-// (hazard-adjacent wind speed vs. plain temperature) — reusing windColor's
-// exact stops here would be a coincidence, not a real shared meaning.
-//
-// Each stop sits at its band's *lower* boundary (<0, 0-5, 5-10, ... 45+),
-// smoothly interpolated between neighbors by colorForTempC below — a
-// continuous gradient (matching BOM's own temperature map look), not
-// discrete painted bands.
-const TEMP_COLOR_STOPS: { tempC: number; rgb: [number, number, number] }[] = [
-  { tempC: -5, rgb: [16, 61, 98] }, // <0
-  { tempC: 0, rgb: [14, 118, 146] }, // 0-5
-  { tempC: 5, rgb: [46, 172, 165] }, // 5-10
-  { tempC: 10, rgb: [109, 204, 166] }, // 10-15
-  { tempC: 15, rgb: [175, 239, 175] }, // 15-20
-  { tempC: 20, rgb: [238, 254, 181] }, // 20-25
-  { tempC: 25, rgb: [244, 225, 112] }, // 25-30
-  { tempC: 30, rgb: [234, 187, 71] }, // 30-35
-  { tempC: 35, rgb: [203, 116, 34] }, // 35-40
-  { tempC: 40, rgb: [173, 71, 3] }, // 40-45
-  { tempC: 45, rgb: [113, 25, 4] }, // 45+
-];
 
 function colorForTempC(tempC: number): [number, number, number] {
   const stops = TEMP_COLOR_STOPS;
@@ -663,6 +643,11 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
     wind: false,
     temperature: false,
   });
+  // Which day of the Temperature forecast is shown (0 = today), driven by
+  // TemperatureDaySlider below the map. Lives here rather than inside the
+  // Temperature effect itself so the slider (a sibling, not a child, of the
+  // Leaflet container) can read and change it.
+  const [temperatureDay, setTemperatureDay] = useState(0);
   // Diffed against each poll's response, keyed by a derived id (strikes
   // carry none of their own) — see lightningIcon's comment for why this
   // can't be a clear-and-redraw like the rings/coverage circles (it would
@@ -1094,26 +1079,37 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
     let cancelled = false;
     let overlay: L.ImageOverlay | undefined;
 
-    void fetch("/api/bom/temperature")
-      .then((res) => (res.ok ? (res.json() as Promise<TemperatureObservation[]>) : []))
-      .then((observations) => {
-        if (cancelled || observations.length === 0) return;
-        const bounds: L.LatLngBoundsExpression = [
-          [GRID_LAT_MIN, GRID_LON_RANGE.min],
-          [GRID_LAT_RANGE.max, GRID_LON_MAX],
-        ];
-        overlay = Leaflet.imageOverlay(buildTemperatureImage(observations), bounds, { opacity: 0.7 }).addTo(map);
-      })
-      .catch(() => {
-        // Same as Wind: an enhancement, not load-bearing — a failed fetch
-        // just means no heat map this toggle.
-      });
+    // TemperatureDaySlider's <input type="range"> fires onChange on every
+    // step while being dragged, not just on release — without debouncing,
+    // a quick drag across several days fired one ~644-point Open-Meteo
+    // request per step in close succession, occasionally enough to trip
+    // Open-Meteo's own rate limit (confirmed live: an intermittent 429 from
+    // Open-Meteo, surfaced here as a 502). 300ms is enough to collapse a
+    // drag into a single request once the user settles on a day, without
+    // feeling laggy for a single click/tap.
+    const timeout = setTimeout(() => {
+      void fetch(`/api/bom/temperature?day=${temperatureDay}`)
+        .then((res) => (res.ok ? (res.json() as Promise<TemperatureObservation[]>) : []))
+        .then((observations) => {
+          if (cancelled || observations.length === 0) return;
+          const bounds: L.LatLngBoundsExpression = [
+            [GRID_LAT_MIN, GRID_LON_RANGE.min],
+            [GRID_LAT_RANGE.max, GRID_LON_MAX],
+          ];
+          overlay = Leaflet.imageOverlay(buildTemperatureImage(observations), bounds, { opacity: 0.7 }).addTo(map);
+        })
+        .catch(() => {
+          // Same as Wind: an enhancement, not load-bearing — a failed fetch
+          // just means no heat map this toggle/day.
+        });
+    }, 300);
 
     return () => {
       cancelled = true;
+      clearTimeout(timeout);
       overlay?.remove();
     };
-  }, [toggles.temperature, mapReady]);
+  }, [toggles.temperature, mapReady, temperatureDay]);
 
   // Lightning: polls the server-buffered strike list (lib/lightning.ts) and
   // diffs against lightningMarkersRef, rather than clearing and redrawing
@@ -1169,7 +1165,9 @@ export default function WeatherMap({ lat, lon }: WeatherMapProps) {
   return (
     <>
       <LayersPanel toggles={toggles} onChange={setToggles} />
+      {toggles.temperature && <TemperatureLegend />}
       <div ref={containerRef} style={{ height: "60vh", width: "100%" }} />
+      {toggles.temperature && <TemperatureDaySlider day={temperatureDay} onChange={setTemperatureDay} />}
     </>
   );
 }
