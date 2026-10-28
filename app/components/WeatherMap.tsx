@@ -22,6 +22,7 @@ import type { WarningArea } from "../../lib/warningAreas.ts";
 import { weatherIconSvg } from "../../lib/weatherIcons.ts";
 import type { WindObservation } from "../../lib/wind.ts";
 import LayersPanel, { type LayerToggles } from "./LayersPanel.tsx";
+import ReportsExplainer from "./ReportsExplainer.tsx";
 import TemperatureDaySlider from "./TemperatureDaySlider.tsx";
 import TemperatureLegend from "./TemperatureLegend.tsx";
 
@@ -63,6 +64,29 @@ const REPORT_LIFETIME_MS = 2 * 60 * 60 * 1000;
 // independently, this just keeps the input from accepting more than can
 // ever be saved.
 const DESCRIPTION_MAX_LENGTH = 280;
+
+// Whether this browser has already seen ReportsExplainer, so it only
+// auto-opens once per visitor (not once per tap) — same same-browser
+// localStorage convenience app/page.tsx already uses for the last-selected
+// place, not load-bearing state.
+const EXPLAINER_SEEN_KEY = "reportsExplainerSeen";
+
+function hasSeenExplainer(): boolean {
+  try {
+    return localStorage.getItem(EXPLAINER_SEEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function markExplainerSeen(): void {
+  try {
+    localStorage.setItem(EXPLAINER_SEEN_KEY, "true");
+  } catch {
+    // private browsing / storage disabled — worst case the explainer
+    // auto-opens again on a later tap, which is harmless.
+  }
+}
 
 const reportOpacity = (createdAt: string): number => {
   const age = Date.now() - new Date(createdAt).getTime();
@@ -739,6 +763,13 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash }: Weathe
   // pattern the plain location dot (locationIcon) already uses for its own
   // setView effect further down.
   const placeMarkerRef = useRef<L.Marker | null>(null);
+  // The tap that triggered ReportsExplainer's first showing — openDraftPopup
+  // (defined inside the map-setup effect below, so not directly reachable
+  // from the explainer's onDismiss outside it) is called with this once the
+  // visitor dismisses the explainer, so the tap that taught them what a
+  // report is still becomes the report they were about to make.
+  const pendingTapRef = useRef<{ lat: number; lon: number } | null>(null);
+  const openDraftPopupRef = useRef<((lat: number, lon: number) => void) | null>(null);
   // Each major city's own marker, keyed by name — so the place-change effect
   // below can hide whichever one the selected place has landed on top of
   // (see CITY_OVERLAP_KM), without recreating every city marker on each
@@ -757,6 +788,10 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash }: Weathe
   // actually ready for the toggle effects below to touch.
   const [mapReady, setMapReady] = useState(false);
   const [radarLoaded, setRadarLoaded] = useState(false);
+  // Shown automatically the first time this browser taps the map to create a
+  // report (see the click handler below), and reopenable any time afterward
+  // via the "?" button next to the Layers panel.
+  const [showExplainer, setShowExplainer] = useState(false);
   const [toggles, setToggles] = useState<LayerToggles>({
     radar: true,
     rings: false,
@@ -974,7 +1009,17 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash }: Weathe
 
       map.on("moveend", () => renderVisibleReports(L, map));
 
+      // Exposed so ReportsExplainer's onDismiss (rendered outside this
+      // effect, by the component's own JSX below) can open the draft popup
+      // for whichever tap triggered the explainer's first showing.
+      openDraftPopupRef.current = (tapLat, tapLon) => openDraftPopup(L, map, tapLat, tapLon);
+
       map.on("click", (e: L.LeafletMouseEvent) => {
+        if (!hasSeenExplainer()) {
+          pendingTapRef.current = { lat: e.latlng.lat, lon: e.latlng.lng };
+          setShowExplainer(true);
+          return;
+        }
         openDraftPopup(L, map, e.latlng.lat, e.latlng.lng);
       });
 
@@ -1317,12 +1362,42 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash }: Weathe
     };
   }, [toggles.lightning, mapReady]);
 
+  // Shared by both ways the explainer can close: the "Got it" button (no
+  // pending tap) and dismissing it after a first real tap-to-report (which
+  // then opens that tap's draft popup, so the tap that taught the visitor
+  // what a report is still becomes the report they were about to make).
+  function dismissExplainer(): void {
+    markExplainerSeen();
+    setShowExplainer(false);
+    const tap = pendingTapRef.current;
+    pendingTapRef.current = null;
+    if (tap) openDraftPopupRef.current?.(tap.lat, tap.lon);
+  }
+
   return (
     <>
-      <LayersPanel toggles={toggles} onChange={setToggles} />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <LayersPanel toggles={toggles} onChange={setToggles} />
+        <button
+          type="button"
+          aria-label="About community reports"
+          title="About community reports"
+          onClick={() => setShowExplainer(true)}
+          style={{
+            width: "1.75rem",
+            height: "1.75rem",
+            borderRadius: "50%",
+            marginLeft: "0.5rem",
+            flexShrink: 0,
+          }}
+        >
+          ?
+        </button>
+      </div>
       {toggles.temperature && <TemperatureLegend />}
       <div ref={containerRef} style={{ height: "60vh", width: "100%" }} />
       {toggles.temperature && <TemperatureDaySlider day={temperatureDay} onChange={setTemperatureDay} />}
+      {showExplainer && <ReportsExplainer onDismiss={dismissExplainer} />}
     </>
   );
 }
