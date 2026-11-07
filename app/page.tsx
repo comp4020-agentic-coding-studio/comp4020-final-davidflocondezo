@@ -3,7 +3,7 @@
 import ngeohash from "ngeohash";
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useState, type CSSProperties } from "react";
 import { haversineKm } from "../lib/geo.ts";
 import { nearestStation } from "../lib/radarStations.ts";
 import type { WarningArea } from "../lib/warningAreas.ts";
@@ -233,10 +233,21 @@ function Home() {
 
   return (
     <main style={{ padding: "1rem", maxWidth: "960px", margin: "0 auto" }}>
-      <h1>Weather &amp; rain radar</h1>
-      <p style={{ marginTop: "-0.5rem", color: "#555" }}>
-        See rain, wind, wave and other weather information for Australia
-      </p>
+      <div
+        style={
+          {
+            paddingTop: "32px",
+            paddingBottom: "32px",
+            backgroundColor: "#0c4ad0",
+            "--esri-calcite-mode-name": "light",
+            lineHeight: "1.5rem",
+            color: "#fff",
+          } as CSSProperties
+        }
+      >
+        <h1>Weather &amp; rain radar</h1>
+        <p style={{ marginTop: "-0.5rem" }}>See rain, wind, wave and other weather information for Australia</p>
+      </div>
       <CurrentConditions
         tempC={weather?.observations?.data?.temp ?? null}
         iconDescriptor={weather?.forecast?.data?.[0]?.icon_descriptor ?? null}
