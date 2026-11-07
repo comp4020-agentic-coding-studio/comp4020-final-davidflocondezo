@@ -37,6 +37,11 @@ export interface WeatherMapProps {
   // through ngeohash.encode(lat, lon)).
   placeName: string;
   placeGeohash: string;
+  // Today's sunrise/sunset for the selected place (BOM's forecast already
+  // returns this — see lib/bom.ts), used to pick the base map's light/dark
+  // tiles. Both timestamps are full UTC ISO strings, so comparing them
+  // directly against `Date.now()` needs no timezone handling of its own.
+  astronomical?: { sunrise_time: string; sunset_time: string } | null;
   // Fired once, the first time the map finishes its initial Leaflet setup —
   // app/page.tsx uses this to time its own first-visit OnboardingTour so it
   // never references the Layers panel before this component has rendered it.
@@ -140,6 +145,35 @@ const escapeHtml = (s: string): string =>
 // the same flood warning during live testing — a reasonable single default,
 // not tuned per warning type.
 const WARNING_RADIUS_METERS = 25_000;
+
+// Light tiles: the OSM default this app already used. Dark tiles: Esri's
+// "World Dark Gray Base" — confirmed live (fetched a real Australia-region
+// tile during implementation) to still serve without an API key; CartoDB's
+// free dark_all tiles, the original pick here, turned out to now return an
+// "API KEY REQUIRED" watermark image on every tile — confirmed live too, so
+// this isn't a CORS/Leaflet issue, that tier is simply gone.
+const LIGHT_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+const LIGHT_TILE_ATTRIBUTION = "© OpenStreetMap contributors";
+const DARK_TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}";
+const DARK_TILE_ATTRIBUTION = "© Esri, HERE, Garmin, FAO, NOAA, USGS, © OpenStreetMap contributors";
+
+// How often to re-check day/night while the tab stays open across an actual
+// sunrise/sunset — coarse since this only flips twice a day.
+const NIGHT_CHECK_INTERVAL_MS = 5 * 60_000;
+
+// Whichever happens later wins when both are set: an explicit viewer choice
+// (made with the full page in front of them) should override what the
+// selected place's own sunrise/sunset would otherwise pick.
+function isNightAt(astronomical: { sunrise_time: string; sunset_time: string } | null | undefined): boolean {
+  if (!astronomical) return false;
+  const now = Date.now();
+  const sunrise = new Date(astronomical.sunrise_time).getTime();
+  const sunset = new Date(astronomical.sunset_time).getTime();
+  // Both are full UTC instants (confirmed live), so a plain numeric
+  // comparison already accounts for the place's own timezone with no
+  // conversion needed — "night" is simply outside today's [sunrise, sunset).
+  return now < sunrise || now > sunset;
+}
 
 // CAP v1.2 defines severity as exactly these 5 values (OASIS spec) — a
 // closed enum, not an open string, so this lookup is exhaustive by
@@ -761,11 +795,25 @@ function bindPlacePopup(Leaflet: typeof L, marker: L.Marker, name: string, geoha
 
 // Leaflet needs `window`, so this only ever runs client-side (see the
 // dynamic(..., { ssr: false }) import in app/page.tsx).
-export default function WeatherMap({ lat, lon, placeName, placeGeohash, onReady, onShowTour }: WeatherMapProps) {
+export default function WeatherMap({
+  lat,
+  lon,
+  placeName,
+  placeGeohash,
+  astronomical,
+  onReady,
+  onShowTour,
+}: WeatherMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const leafletRef = useRef<typeof L | null>(null);
   const radarLayerRef = useRef<L.TileLayer | null>(null);
+  const baseLayerRef = useRef<L.TileLayer | null>(null);
+  // Tracks which tile set is actually applied right now (the layer starts
+  // on light tiles — see its construction below), so the day/night effect's
+  // periodic re-check only touches setUrl/attribution when something
+  // actually changed, not on every interval tick.
+  const currentlyNightRef = useRef(false);
   // The selected place's own labeled marker — kept as a ref (not recreated
   // every render) so its position/popup can be updated in place by the
   // effect below when `lat`/`lon`/`placeName`/`placeGeohash` change, the same
@@ -804,6 +852,10 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash, onReady,
   // Whether the "?" button's own small options popover (not either dialog
   // it opens) is currently open.
   const [showHelpMenu, setShowHelpMenu] = useState(false);
+  // null = follow the selected place's own sunrise/sunset; true/false = a
+  // viewer's explicit choice via the map-style toggle, which wins over
+  // whatever the place's own day/night would otherwise pick.
+  const [nightOverride, setNightOverride] = useState<boolean | null>(null);
   const [toggles, setToggles] = useState<LayerToggles>({
     radar: true,
     rings: false,
@@ -992,9 +1044,11 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash, onReady,
       const map = mapRef.current ?? L.map(containerRef.current).setView([lat, lon], 7);
       mapRef.current = map;
 
-      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "© OpenStreetMap contributors",
-      }).addTo(map);
+      // Starts on whatever light/dark pick is current at mount; the
+      // astronomical-driven effect below (keyed on astronomical/
+      // nightOverride) keeps it in sync with later changes, including a
+      // place with a different sunrise/sunset.
+      baseLayerRef.current = L.tileLayer(LIGHT_TILE_URL, { attribution: LIGHT_TILE_ATTRIBUTION }).addTo(map);
 
       // Labeled and clickable (unlike the plain dot this replaced) so the
       // selected place can show its own current/overnight-min/tomorrow's-max
@@ -1191,6 +1245,34 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash, onReady,
     if (toggles.radar) layer.addTo(map);
     else map.removeLayer(layer);
   }, [toggles.radar, radarLoaded]);
+
+  // Day/night base tiles: nightOverride (an explicit viewer choice) wins
+  // over the selected place's own sunrise/sunset when set; otherwise follow
+  // astronomical. Re-checked on an interval too, so a tab left open across
+  // an actual sunset/sunrise picks it up without needing a place change or
+  // reload to notice. currentlyNightRef avoids calling setUrl/attribution
+  // churn on every interval tick when nothing actually changed.
+  useEffect(() => {
+    const map = mapRef.current;
+    const layer = baseLayerRef.current;
+    if (!map || !layer || !mapReady) return;
+
+    const applyTileSet = (): void => {
+      const night = nightOverride ?? isNightAt(astronomical);
+      if (night === currentlyNightRef.current) return;
+      currentlyNightRef.current = night;
+      layer.setUrl(night ? DARK_TILE_URL : LIGHT_TILE_URL);
+      map.attributionControl.removeAttribution(night ? LIGHT_TILE_ATTRIBUTION : DARK_TILE_ATTRIBUTION);
+      map.attributionControl.addAttribution(night ? DARK_TILE_ATTRIBUTION : LIGHT_TILE_ATTRIBUTION);
+    };
+
+    applyTileSet();
+    // Only matters when following astronomical (nightOverride === null) —
+    // an explicit override doesn't change on its own, so the interval is
+    // harmless but redundant in that case.
+    const interval = setInterval(applyTileSet, NIGHT_CHECK_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [astronomical, nightOverride, mapReady]);
 
   // Rings: concentric circles around the selected location, purely
   // client-side (no data source) — depends on [lat, lon] so it re-centers
@@ -1391,6 +1473,25 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash, onReady,
     <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <LayersPanel toggles={toggles} onChange={setToggles} />
+        <div style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+          {/* Cycles Auto (follow the place's own sunrise/sunset) -> Day ->
+              Night -> back to Auto, rather than a single on/off switch, so a
+              viewer can both force a style and return to the automatic one. */}
+          <button
+            type="button"
+            title={
+              nightOverride === null
+                ? "Map style: Auto (click for Day)"
+                : nightOverride
+                  ? "Map style: Night (click for Auto)"
+                  : "Map style: Day (click for Night)"
+            }
+            onClick={() => setNightOverride((current) => (current === null ? false : current ? null : true))}
+            style={{ padding: "0.25rem 0.6rem", marginRight: "0.5rem", fontSize: "0.85rem" }}
+          >
+            {nightOverride === null ? "Auto" : nightOverride ? "Night" : "Day"}
+          </button>
+        </div>
         <div style={{ position: "relative", marginLeft: "0.5rem", flexShrink: 0 }}>
           <button
             type="button"

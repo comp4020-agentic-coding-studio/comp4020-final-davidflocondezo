@@ -70,6 +70,8 @@ interface WeatherObservation {
 
 interface DailyForecast {
   icon_descriptor?: string | null;
+  uv?: { category: string; max_index: number } | null;
+  astronomical?: { sunrise_time: string; sunset_time: string } | null;
 }
 
 function Home() {
@@ -256,6 +258,7 @@ function Home() {
         tempC={weather?.observations?.data?.temp ?? null}
         iconDescriptor={weather?.forecast?.data?.[0]?.icon_descriptor ?? null}
         nearestWarningHeadline={nearestWarningHeadline}
+        uv={weather?.forecast?.data?.[0]?.uv ?? null}
       />
       <div className="search-row">
         <div className="search-input-wrap">
@@ -306,6 +309,7 @@ function Home() {
             lon={place.lon}
             placeName={place.name}
             placeGeohash={place.geohash}
+            astronomical={weather?.forecast?.data?.[0]?.astronomical ?? null}
             onReady={handleMapReady}
             onShowTour={() => setShowTour(true)}
           />
