@@ -9,6 +9,7 @@ import { nearestStation } from "../lib/radarStations.ts";
 import type { WarningArea } from "../lib/warningAreas.ts";
 import CurrentConditions from "./components/CurrentConditions.tsx";
 import LocationSearch, { type SearchResult } from "./components/LocationSearch.tsx";
+import OnboardingTour from "./components/OnboardingTour.tsx";
 
 const WeatherMap = dynamic(() => import("./components/WeatherMap.tsx"), { ssr: false });
 
@@ -32,6 +33,27 @@ function readStoredPlace(): SearchResult | null {
     return raw ? (JSON.parse(raw) as SearchResult) : null;
   } catch {
     return null;
+  }
+}
+
+// Same same-browser localStorage convenience as STORAGE_KEY above and
+// WeatherMap.tsx's own EXPLAINER_SEEN_KEY — not load-bearing, so a
+// private-browsing tab or cleared storage just shows the tour again.
+const TOUR_SEEN_KEY = "onboardingTourSeen";
+
+function hasSeenTour(): boolean {
+  try {
+    return localStorage.getItem(TOUR_SEEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function markTourSeen(): void {
+  try {
+    localStorage.setItem(TOUR_SEEN_KEY, "true");
+  } catch {
+    // worst case the tour shows again on a later visit, which is harmless.
   }
 }
 
@@ -66,6 +88,7 @@ function Home() {
   // the first one BOM's feed happens to list.
   const [warningAreas, setWarningAreas] = useState<WarningArea[]>([]);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [showTour, setShowTour] = useState(false);
 
   // Shared by the initial load (below) and the "Use my location" button —
   // same success path, same geohash/name shape. A browser that already
@@ -178,6 +201,18 @@ function Home() {
 
   const station = place ? nearestStation(place.lat, place.lon) : undefined;
 
+  // Fired once by WeatherMap's own onReady, once its Layers panel actually
+  // exists on screen — so a first-ever visitor never sees the tour
+  // reference UI that isn't rendered yet.
+  function handleMapReady(): void {
+    if (!hasSeenTour()) setShowTour(true);
+  }
+
+  function dismissTour(): void {
+    markTourSeen();
+    setShowTour(false);
+  }
+
   // The warning whose *nearest resolved place* is closest to the selected
   // location — not just the first one BOM's feed lists — falling back to the
   // feed's own first warning when no place is selected yet (briefly, before
@@ -218,7 +253,14 @@ function Home() {
             {place.name}
             {place.state ? `, ${place.state}` : ""}
           </h2>
-          <WeatherMap lat={place.lat} lon={place.lon} placeName={place.name} placeGeohash={place.geohash} />
+          <WeatherMap
+            lat={place.lat}
+            lon={place.lon}
+            placeName={place.name}
+            placeGeohash={place.geohash}
+            onReady={handleMapReady}
+            onShowTour={() => setShowTour(true)}
+          />
           <p>Nearest radar: {station.name}</p>
 
           {weather?.warnings?.data && weather.warnings.data.length > 0 && (
@@ -241,6 +283,7 @@ function Home() {
       <p>
         <a href="/readme/">About this app</a>
       </p>
+      {showTour && <OnboardingTour onDismiss={dismissTour} />}
     </main>
   );
 }

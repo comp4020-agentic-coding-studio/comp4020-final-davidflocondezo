@@ -37,6 +37,15 @@ export interface WeatherMapProps {
   // through ngeohash.encode(lat, lon)).
   placeName: string;
   placeGeohash: string;
+  // Fired once, the first time the map finishes its initial Leaflet setup —
+  // app/page.tsx uses this to time its own first-visit OnboardingTour so it
+  // never references the Layers panel before this component has rendered it.
+  onReady?: () => void;
+  // The "?" button's second option (the first, "About community reports",
+  // is handled entirely inside this component) — app/page.tsx owns the tour
+  // since its content spans beyond just the map (search box, location
+  // button) that this component has no knowledge of.
+  onShowTour?: () => void;
 }
 
 interface Report {
@@ -752,7 +761,7 @@ function bindPlacePopup(Leaflet: typeof L, marker: L.Marker, name: string, geoha
 
 // Leaflet needs `window`, so this only ever runs client-side (see the
 // dynamic(..., { ssr: false }) import in app/page.tsx).
-export default function WeatherMap({ lat, lon, placeName, placeGeohash }: WeatherMapProps) {
+export default function WeatherMap({ lat, lon, placeName, placeGeohash, onReady, onShowTour }: WeatherMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const leafletRef = useRef<typeof L | null>(null);
@@ -792,6 +801,9 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash }: Weathe
   // report (see the click handler below), and reopenable any time afterward
   // via the "?" button next to the Layers panel.
   const [showExplainer, setShowExplainer] = useState(false);
+  // Whether the "?" button's own small options popover (not either dialog
+  // it opens) is currently open.
+  const [showHelpMenu, setShowHelpMenu] = useState(false);
   const [toggles, setToggles] = useState<LayerToggles>({
     radar: true,
     rings: false,
@@ -1025,6 +1037,7 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash }: Weathe
 
       leafletRef.current = L;
       setMapReady(true);
+      onReady?.();
 
       const res = await fetch("/api/radar");
       if (cancelled || !res.ok) return;
@@ -1378,21 +1391,56 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash }: Weathe
     <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <LayersPanel toggles={toggles} onChange={setToggles} />
-        <button
-          type="button"
-          aria-label="About community reports"
-          title="About community reports"
-          onClick={() => setShowExplainer(true)}
-          style={{
-            width: "1.75rem",
-            height: "1.75rem",
-            borderRadius: "50%",
-            marginLeft: "0.5rem",
-            flexShrink: 0,
-          }}
-        >
-          ?
-        </button>
+        <div style={{ position: "relative", marginLeft: "0.5rem", flexShrink: 0 }}>
+          <button
+            type="button"
+            aria-label="Help"
+            title="Help"
+            onClick={() => setShowHelpMenu((open) => !open)}
+            style={{ width: "1.75rem", height: "1.75rem", borderRadius: "50%" }}
+          >
+            ?
+          </button>
+          {showHelpMenu && (
+            <div
+              role="menu"
+              style={{
+                position: "absolute",
+                right: 0,
+                top: "2rem",
+                background: "white",
+                border: "1px solid #ccc",
+                borderRadius: "6px",
+                boxShadow: "0 2px 10px rgba(0,0,0,0.15)",
+                whiteSpace: "nowrap",
+                zIndex: 1500,
+              }}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setShowHelpMenu(false);
+                  setShowExplainer(true);
+                }}
+                style={{ display: "block", width: "100%", padding: "0.5rem 0.75rem", textAlign: "left" }}
+              >
+                About community reports
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setShowHelpMenu(false);
+                  onShowTour?.();
+                }}
+                style={{ display: "block", width: "100%", padding: "0.5rem 0.75rem", textAlign: "left" }}
+              >
+                How this app works
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       {toggles.temperature && <TemperatureLegend />}
       <div ref={containerRef} style={{ height: "60vh", width: "100%" }} />
