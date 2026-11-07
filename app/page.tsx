@@ -242,12 +242,38 @@ function Home() {
         iconDescriptor={weather?.forecast?.data?.[0]?.icon_descriptor ?? null}
         nearestWarningHeadline={nearestWarningHeadline}
       />
-      <LocationSearch onSelect={selectPlace} />
-      <p>
+      <div className="search-row">
+        <div className="search-input-wrap">
+          <LocationSearch onSelect={selectPlace} />
+        </div>
         <button type="button" onClick={() => requestLocation(() => {}, false)} style={{ padding: "0.5rem 1rem" }}>
           Use my location
         </button>
-      </p>
+      </div>
+      {/* Column on mobile (each full-width, stacked); row on desktop, with
+          the search input capped to a fixed width so "Use my location" has
+          room to sit on the same line — plain <style> since this repo has
+          no CSS setup to target a breakpoint from inline styles alone. */}
+      <style>{`
+        .search-row {
+          display: flex;
+          flex-direction: column;
+          align-items: stretch;
+          gap: 0.5rem;
+        }
+        .search-input-wrap {
+          width: 100%;
+        }
+        @media (min-width: 640px) {
+          .search-row {
+            flex-direction: row;
+            align-items: flex-start;
+          }
+          .search-input-wrap {
+            width: 320px;
+          }
+        }
+      `}</style>
       {locationError && <p style={{ color: "crimson" }}>{locationError}</p>}
 
       {place && station && (
