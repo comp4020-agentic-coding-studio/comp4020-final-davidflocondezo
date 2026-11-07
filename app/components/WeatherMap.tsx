@@ -1397,7 +1397,14 @@ export default function WeatherMap({ lat, lon, placeName, placeGeohash, onReady,
             aria-label="Help"
             title="Help"
             onClick={() => setShowHelpMenu((open) => !open)}
-            style={{ width: "1.75rem", height: "1.75rem", borderRadius: "50%" }}
+            style={{
+              width: "1.75rem",
+              height: "1.75rem",
+              borderRadius: "50%",
+              background: "none",
+              border: "1px solid #2461e5",
+              color: "#2461e5",
+            }}
           >
             ?
           </button>
