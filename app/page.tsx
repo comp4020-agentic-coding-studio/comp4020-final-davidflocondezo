@@ -4,8 +4,11 @@ import ngeohash from "ngeohash";
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import LocationSearch, { type SearchResult } from "./components/LocationSearch.tsx";
+import { haversineKm } from "../lib/geo.ts";
 import { nearestStation } from "../lib/radarStations.ts";
+import type { WarningArea } from "../lib/warningAreas.ts";
+import CurrentConditions from "./components/CurrentConditions.tsx";
+import LocationSearch, { type SearchResult } from "./components/LocationSearch.tsx";
 
 const WeatherMap = dynamic(() => import("./components/WeatherMap.tsx"), { ssr: false });
 
@@ -43,6 +46,10 @@ interface WeatherObservation {
   temp?: number;
 }
 
+interface DailyForecast {
+  icon_descriptor?: string | null;
+}
+
 function Home() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -50,7 +57,14 @@ function Home() {
   const [weather, setWeather] = useState<{
     observations?: { data?: WeatherObservation };
     warnings?: { data?: { title: string }[] };
+    forecast?: { data?: DailyForecast[] };
   } | null>(null);
+  // Nationwide, with each warning's resolved place coordinates — fetched
+  // separately from `weather` above (which only carries the forecast
+  // district's own warning *titles*, no coordinates) so CurrentConditions
+  // can show whichever warning is geographically nearest `place`, not just
+  // the first one BOM's feed happens to list.
+  const [warningAreas, setWarningAreas] = useState<WarningArea[]>([]);
   const [locationError, setLocationError] = useState<string | null>(null);
 
   // Shared by the initial load (below) and the "Use my location" button —
@@ -151,11 +165,45 @@ function Home() {
       .catch(() => setWeather(null));
   }, [place]);
 
+  // National list, fetched once (not re-fetched per place change, unlike
+  // the geohash-scoped weather call above) — the same list WeatherMap.tsx's
+  // own warning-circle layer already fetches independently; CurrentConditions
+  // just needs the list client-side to pick the nearest one.
+  useEffect(() => {
+    void fetch("/api/bom/warning-areas")
+      .then((res) => (res.ok ? (res.json() as Promise<WarningArea[]>) : []))
+      .then(setWarningAreas)
+      .catch(() => setWarningAreas([]));
+  }, []);
+
   const station = place ? nearestStation(place.lat, place.lon) : undefined;
+
+  // The warning whose *nearest resolved place* is closest to the selected
+  // location — not just the first one BOM's feed lists — falling back to the
+  // feed's own first warning when no place is selected yet (briefly, before
+  // the initial geolocation/trace/default chain resolves one).
+  const nearestWarningHeadline = ((): string | null => {
+    if (warningAreas.length === 0) return null;
+    if (!place) return warningAreas[0].headline;
+
+    let closest: { headline: string; km: number } | undefined;
+    for (const warning of warningAreas) {
+      for (const warningPlace of warning.places) {
+        const km = haversineKm(place.lat, place.lon, warningPlace.lat, warningPlace.lon);
+        if (!closest || km < closest.km) closest = { headline: warning.headline, km };
+      }
+    }
+    return closest?.headline ?? null;
+  })();
 
   return (
     <main style={{ padding: "1rem", maxWidth: "960px", margin: "0 auto" }}>
       <h1>Weather &amp; rain radar</h1>
+      <CurrentConditions
+        tempC={weather?.observations?.data?.temp ?? null}
+        iconDescriptor={weather?.forecast?.data?.[0]?.icon_descriptor ?? null}
+        nearestWarningHeadline={nearestWarningHeadline}
+      />
       <LocationSearch onSelect={selectPlace} />
       <p>
         <button type="button" onClick={() => requestLocation(() => {}, false)} style={{ padding: "0.5rem 1rem" }}>
