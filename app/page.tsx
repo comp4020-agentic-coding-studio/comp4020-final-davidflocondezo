@@ -246,7 +246,11 @@ function Home() {
         <div className="search-input-wrap">
           <LocationSearch onSelect={selectPlace} />
         </div>
-        <button type="button" onClick={() => requestLocation(() => {}, false)} style={{ padding: "0.5rem 1rem" }}>
+        <button
+          type="button"
+          onClick={() => requestLocation(() => {}, false)}
+          style={{ padding: "0.5rem 1rem", height: "2.375rem" }}
+        >
           Use my location
         </button>
       </div>
