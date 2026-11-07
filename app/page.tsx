@@ -8,6 +8,7 @@ import { haversineKm } from "../lib/geo.ts";
 import { nearestStation } from "../lib/radarStations.ts";
 import type { WarningArea } from "../lib/warningAreas.ts";
 import CurrentConditions from "./components/CurrentConditions.tsx";
+import FavoritesBar from "./components/FavoritesBar.tsx";
 import LocationSearch, { type SearchResult } from "./components/LocationSearch.tsx";
 import OnboardingTour from "./components/OnboardingTour.tsx";
 
@@ -57,6 +58,30 @@ function markTourSeen(): void {
   }
 }
 
+// A short list of starred places, independent of STORAGE_KEY above (which
+// only ever holds the single last-visited place) — same same-browser
+// localStorage convenience, not load-bearing.
+const FAVORITES_KEY = "favorites";
+const MAX_FAVORITES = 5;
+
+function readFavorites(): SearchResult[] {
+  try {
+    const raw = localStorage.getItem(FAVORITES_KEY);
+    return raw ? (JSON.parse(raw) as SearchResult[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveFavorites(list: SearchResult[]): void {
+  try {
+    localStorage.setItem(FAVORITES_KEY, JSON.stringify(list));
+  } catch {
+    // private browsing / storage disabled — favorites just won't persist
+    // across a reload, same degradation as the other localStorage uses here.
+  }
+}
+
 function placeFromGeohash(geohash: string): SearchResult {
   const { latitude: lat, longitude: lon } = ngeohash.decode(geohash);
   // A bare geohash carries no name/state, so this reads as a deliberate
@@ -91,6 +116,11 @@ function Home() {
   const [warningAreas, setWarningAreas] = useState<WarningArea[]>([]);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [showTour, setShowTour] = useState(false);
+  // Loaded lazily (empty on the server-rendered pass, filled in on mount)
+  // since localStorage doesn't exist during SSR — same pattern STORAGE_KEY's
+  // place/tour-seen reads already use via useEffect rather than useState's
+  // initializer.
+  const [favorites, setFavorites] = useState<SearchResult[]>([]);
 
   // Shared by the initial load (below) and the "Use my location" button —
   // same success path, same geohash/name shape. A browser that already
@@ -183,6 +213,33 @@ function Home() {
   }
 
   useEffect(() => {
+    setFavorites(readFavorites());
+  }, []);
+
+  // Adds the current place if it isn't already favorited (dropping the
+  // oldest once at MAX_FAVORITES, so starring one more always succeeds
+  // rather than silently doing nothing at the cap), or removes it if it is
+  // — the single star button's whole job, toggled by what's already saved.
+  function toggleFavorite(p: SearchResult): void {
+    setFavorites((current) => {
+      const already = current.some((f) => f.geohash === p.geohash);
+      const next = already
+        ? current.filter((f) => f.geohash !== p.geohash)
+        : [...current, p].slice(-MAX_FAVORITES);
+      saveFavorites(next);
+      return next;
+    });
+  }
+
+  function removeFavorite(geohash: string): void {
+    setFavorites((current) => {
+      const next = current.filter((f) => f.geohash !== geohash);
+      saveFavorites(next);
+      return next;
+    });
+  }
+
+  useEffect(() => {
     if (!place) return;
     void fetch(`/api/bom/weather?geohash=${place.geohash}`)
       .then((res) => (res.ok ? res.json() : null))
@@ -233,6 +290,8 @@ function Home() {
     return closest?.headline ?? null;
   })();
 
+  const isCurrentPlaceFavorite = place ? favorites.some((f) => f.geohash === place.geohash) : false;
+
   return (
     <main style={{ padding: "1rem", maxWidth: "960px", margin: "0 auto" }}>
       <div
@@ -260,6 +319,7 @@ function Home() {
         nearestWarningHeadline={nearestWarningHeadline}
         uv={weather?.forecast?.data?.[0]?.uv ?? null}
       />
+      <FavoritesBar favorites={favorites} onSelect={selectPlace} onRemove={removeFavorite} />
       <div className="search-row">
         <div className="search-input-wrap">
           <LocationSearch onSelect={selectPlace} />
@@ -300,9 +360,29 @@ function Home() {
 
       {place && station && (
         <>
-          <h2>
-            {place.name}
-            {place.state ? `, ${place.state}` : ""}
+          <h2 style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <span>
+              {place.name}
+              {place.state ? `, ${place.state}` : ""}
+            </span>
+            <button
+              type="button"
+              aria-label={isCurrentPlaceFavorite ? "Remove from favorites" : "Add to favorites"}
+              title={isCurrentPlaceFavorite ? "Remove from favorites" : "Add to favorites"}
+              onClick={() => toggleFavorite(place)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+                fontSize: "1.25rem",
+                color: isCurrentPlaceFavorite ? "#e6a817" : "#ccc",
+              }}
+            >
+              {isCurrentPlaceFavorite ? "★" : "☆"}
+            </button>
           </h2>
           <WeatherMap
             lat={place.lat}
