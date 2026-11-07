@@ -234,6 +234,9 @@ function Home() {
   return (
     <main style={{ padding: "1rem", maxWidth: "960px", margin: "0 auto" }}>
       <h1>Weather &amp; rain radar</h1>
+      <p style={{ marginTop: "-0.5rem", color: "#555" }}>
+        See rain, wind, wave and other weather information for Australia
+      </p>
       <CurrentConditions
         tempC={weather?.observations?.data?.temp ?? null}
         iconDescriptor={weather?.forecast?.data?.[0]?.icon_descriptor ?? null}
