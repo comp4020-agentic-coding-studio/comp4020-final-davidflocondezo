@@ -12,6 +12,7 @@ import FavoritesBar from "./components/FavoritesBar.tsx";
 import LocationSearch, { type SearchResult } from "./components/LocationSearch.tsx";
 import OnboardingTour from "./components/OnboardingTour.tsx";
 import PushToggle from "./components/PushToggle.tsx";
+import ShareButton from "./components/ShareButton.tsx";
 
 const WeatherMap = dynamic(() => import("./components/WeatherMap.tsx"), { ssr: false });
 
@@ -412,6 +413,7 @@ function Home() {
               {isCurrentPlaceFavorite ? "★" : "☆"}
             </button>
             <PushToggle place={place} isFavorite={isCurrentPlaceFavorite} />
+            <ShareButton geohash={place.geohash} />
           </h2>
           <WeatherMap
             lat={place.lat}
