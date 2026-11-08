@@ -147,15 +147,18 @@ const escapeHtml = (s: string): string =>
 const WARNING_RADIUS_METERS = 25_000;
 
 // Light tiles: the OSM default this app already used. Dark tiles: Esri's
-// "World Dark Gray Base" — confirmed live (fetched a real Australia-region
-// tile during implementation) to still serve without an API key; CartoDB's
-// free dark_all tiles, the original pick here, turned out to now return an
-// "API KEY REQUIRED" watermark image on every tile — confirmed live too, so
-// this isn't a CORS/Leaflet issue, that tier is simply gone.
+// Every free, keyless *colored* dark tile provider checked (CartoDB,
+// Stadia, Jawg) either requires an API key outright or — CartoDB's dark_all,
+// the original pick here — now returns a 200 with an "API KEY REQUIRED"
+// watermark baked into the tile image itself (confirmed by fetching and
+// inspecting an actual tile, not just the status code). The remaining
+// keyless option with real color (Esri's dark-gray base) is grayscale only.
+// So night mode reuses the same OSM day tiles and recolors them with a CSS
+// filter (DARK_TILE_CLASS below) instead of switching tile providers —
+// keyless, and still colored rather than monochrome.
 const LIGHT_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const LIGHT_TILE_ATTRIBUTION = "© OpenStreetMap contributors";
-const DARK_TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}";
-const DARK_TILE_ATTRIBUTION = "© Esri, HERE, Garmin, FAO, NOAA, USGS, © OpenStreetMap contributors";
+const DARK_TILE_CLASS = "map-tiles-night";
 
 // How often to re-check day/night while the tab stays open across an actual
 // sunrise/sunset — coarse since this only flips twice a day.
@@ -1250,8 +1253,11 @@ export default function WeatherMap({
   // over the selected place's own sunrise/sunset when set; otherwise follow
   // astronomical. Re-checked on an interval too, so a tab left open across
   // an actual sunset/sunrise picks it up without needing a place change or
-  // reload to notice. currentlyNightRef avoids calling setUrl/attribution
-  // churn on every interval tick when nothing actually changed.
+  // reload to notice. currentlyNightRef avoids toggling the class churn on
+  // every interval tick when nothing actually changed. The tile *source*
+  // never changes (see DARK_TILE_CLASS above) — only a CSS filter on the
+  // tile pane, so there's no attribution swap either: it's the same OSM
+  // data either way.
   useEffect(() => {
     const map = mapRef.current;
     const layer = baseLayerRef.current;
@@ -1261,9 +1267,7 @@ export default function WeatherMap({
       const night = nightOverride ?? isNightAt(astronomical);
       if (night === currentlyNightRef.current) return;
       currentlyNightRef.current = night;
-      layer.setUrl(night ? DARK_TILE_URL : LIGHT_TILE_URL);
-      map.attributionControl.removeAttribution(night ? LIGHT_TILE_ATTRIBUTION : DARK_TILE_ATTRIBUTION);
-      map.attributionControl.addAttribution(night ? DARK_TILE_ATTRIBUTION : LIGHT_TILE_ATTRIBUTION);
+      map.getPane("tilePane")?.classList.toggle(DARK_TILE_CLASS, night);
     };
 
     applyTileSet();
@@ -1552,6 +1556,19 @@ export default function WeatherMap({
       </div>
       {toggles.temperature && <TemperatureLegend />}
       <div ref={containerRef} style={{ height: "60vh", width: "100%" }} />
+      {/* Night mode recolors the same OSM day tiles instead of switching
+          providers (see DARK_TILE_CLASS above) — invert flips light
+          roads/land dark and dark water light, hue-rotate brings water back
+          to a blue rather than the orange invert leaves it, and the
+          brightness/contrast/saturate tweaks keep the result from going too
+          flat or garish. Plain <style>, same as page.tsx's .search-row —
+          this repo has no CSS setup to scope styles any other way, and
+          Leaflet's tile pane is plain DOM outside React's own tree anyway. */}
+      <style>{`
+        .map-tiles-night {
+          filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9) saturate(0.8);
+        }
+      `}</style>
       {toggles.temperature && <TemperatureDaySlider day={temperatureDay} onChange={setTemperatureDay} />}
       {showExplainer && <ReportsExplainer onDismiss={dismissExplainer} />}
     </>
