@@ -120,6 +120,27 @@ function getDb(): Database.Database {
     )
   `);
 
+  // One row per (subscription, watched place) — a visitor can favorite up to
+  // MAX_FAVORITES places (app/page.tsx) and each becomes its own row here, so
+  // unfavoriting one place doesn't touch notifications for the others.
+  // last_warning_headline is how a push is only sent on a *change*, not
+  // re-sent on every opportunistic check while the same warning is still
+  // active (see checkAndNotify in lib/push.ts).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint TEXT NOT NULL,
+      geohash TEXT NOT NULL,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      lat REAL NOT NULL,
+      lon REAL NOT NULL,
+      place_name TEXT NOT NULL,
+      last_warning_headline TEXT,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (endpoint, geohash)
+    )
+  `);
+
   dbInstance = db;
   return db;
 }
@@ -307,4 +328,75 @@ export function saveLightningCache(data: unknown): void {
          updated_at = excluded.updated_at`,
     )
     .run({ data: JSON.stringify(data), updatedAt: new Date().toISOString() });
+}
+
+export interface PushSubscriptionRow {
+  endpoint: string;
+  geohash: string;
+  p256dh: string;
+  auth: string;
+  lat: number;
+  lon: number;
+  placeName: string;
+  lastWarningHeadline: string | null;
+}
+
+export function savePushSubscription(row: {
+  endpoint: string;
+  geohash: string;
+  p256dh: string;
+  auth: string;
+  lat: number;
+  lon: number;
+  placeName: string;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO push_subscriptions (endpoint, geohash, p256dh, auth, lat, lon, place_name, created_at)
+       VALUES (@endpoint, @geohash, @p256dh, @auth, @lat, @lon, @placeName, @createdAt)
+       ON CONFLICT(endpoint, geohash) DO UPDATE SET
+         p256dh = excluded.p256dh,
+         auth = excluded.auth,
+         lat = excluded.lat,
+         lon = excluded.lon,
+         place_name = excluded.place_name`,
+    )
+    .run({ ...row, createdAt: new Date().toISOString() });
+}
+
+// Called both on an explicit "stop notifying me" and, from the client, on
+// unfavoriting a place — either way the subscription for that one
+// (endpoint, geohash) pair should stop being checked.
+export function removePushSubscription(endpoint: string, geohash: string): void {
+  getDb().prepare(`DELETE FROM push_subscriptions WHERE endpoint = ? AND geohash = ?`).run(endpoint, geohash);
+}
+
+// A push subscription endpoint is itself a capability URL (anyone who has it
+// can address that browser), so a full unsubscribe — e.g. the browser itself
+// revoked permission — removes every watched place for it, not just one.
+export function removePushSubscriptionsByEndpoint(endpoint: string): void {
+  getDb().prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?`).run(endpoint);
+}
+
+export function listPushSubscriptions(): PushSubscriptionRow[] {
+  return getDb()
+    .prepare(
+      `SELECT endpoint, geohash, p256dh, auth, lat, lon,
+              place_name AS placeName, last_warning_headline AS lastWarningHeadline
+       FROM push_subscriptions`,
+    )
+    .all() as PushSubscriptionRow[];
+}
+
+export function isPushSubscribed(endpoint: string, geohash: string): boolean {
+  return (
+    getDb().prepare(`SELECT 1 FROM push_subscriptions WHERE endpoint = ? AND geohash = ?`).get(endpoint, geohash) !==
+    undefined
+  );
+}
+
+export function updateLastWarningHeadline(endpoint: string, geohash: string, headline: string | null): void {
+  getDb()
+    .prepare(`UPDATE push_subscriptions SET last_warning_headline = ? WHERE endpoint = ? AND geohash = ?`)
+    .run(headline, endpoint, geohash);
 }

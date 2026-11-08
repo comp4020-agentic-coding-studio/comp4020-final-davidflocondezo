@@ -11,6 +11,7 @@ import CurrentConditions from "./components/CurrentConditions.tsx";
 import FavoritesBar from "./components/FavoritesBar.tsx";
 import LocationSearch, { type SearchResult } from "./components/LocationSearch.tsx";
 import OnboardingTour from "./components/OnboardingTour.tsx";
+import PushToggle from "./components/PushToggle.tsx";
 
 const WeatherMap = dynamic(() => import("./components/WeatherMap.tsx"), { ssr: false });
 
@@ -216,6 +217,28 @@ function Home() {
     setFavorites(readFavorites());
   }, []);
 
+  // Push notifications (feature #19) are only ever turned on for a favorited
+  // place (PushToggle.tsx), so unfavoriting one should also stop them —
+  // otherwise a dropped favorite keeps silently pushing from a row the
+  // visitor has no UI left to see or turn off. Best-effort: no push
+  // subscription existing yet for this geohash is the common case, not an
+  // error.
+  function unsubscribePush(geohash: string): void {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    void navigator.serviceWorker
+      .getRegistration("/sw.js")
+      .then((reg) => reg?.pushManager.getSubscription())
+      .then((sub) => {
+        if (!sub) return;
+        void fetch("/api/push/unsubscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ endpoint: sub.endpoint, geohash }),
+        });
+      })
+      .catch(() => {});
+  }
+
   // Adds the current place if it isn't already favorited (dropping the
   // oldest once at MAX_FAVORITES, so starring one more always succeeds
   // rather than silently doing nothing at the cap), or removes it if it is
@@ -223,9 +246,13 @@ function Home() {
   function toggleFavorite(p: SearchResult): void {
     setFavorites((current) => {
       const already = current.some((f) => f.geohash === p.geohash);
-      const next = already
-        ? current.filter((f) => f.geohash !== p.geohash)
-        : [...current, p].slice(-MAX_FAVORITES);
+      const next = already ? current.filter((f) => f.geohash !== p.geohash) : [...current, p].slice(-MAX_FAVORITES);
+      // Whatever fell out of `current` and isn't in `next` either unstarred
+      // normally or got evicted by the MAX_FAVORITES cap — both cases mean
+      // its notifications (if any) are now orphaned, same as removeFavorite.
+      for (const dropped of current) {
+        if (!next.some((f) => f.geohash === dropped.geohash)) unsubscribePush(dropped.geohash);
+      }
       saveFavorites(next);
       return next;
     });
@@ -237,6 +264,7 @@ function Home() {
       saveFavorites(next);
       return next;
     });
+    unsubscribePush(geohash);
   }
 
   useEffect(() => {
@@ -383,6 +411,7 @@ function Home() {
             >
               {isCurrentPlaceFavorite ? "★" : "☆"}
             </button>
+            <PushToggle place={place} isFavorite={isCurrentPlaceFavorite} />
           </h2>
           <WeatherMap
             lat={place.lat}
