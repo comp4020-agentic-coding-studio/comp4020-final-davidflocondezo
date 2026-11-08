@@ -1477,81 +1477,89 @@ export default function WeatherMap({
     <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <LayersPanel toggles={toggles} onChange={setToggles} />
+        {/* Style toggle and help grouped into one flex item (rather than
+            three siblings under space-between, which would float the style
+            toggle in the row's dead center) so the toggle sits immediately
+            to the help button's left. */}
         <div style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
-          {/* Cycles Auto (follow the place's own sunrise/sunset) -> Day ->
-              Night -> back to Auto, rather than a single on/off switch, so a
-              viewer can both force a style and return to the automatic one. */}
-          <button
-            type="button"
-            title={
-              nightOverride === null
-                ? "Map style: Auto (click for Day)"
-                : nightOverride
-                  ? "Map style: Night (click for Auto)"
-                  : "Map style: Day (click for Night)"
-            }
-            onClick={() => setNightOverride((current) => (current === null ? false : current ? null : true))}
-            style={{ padding: "0.25rem 0.6rem", marginRight: "0.5rem", fontSize: "0.85rem" }}
-          >
-            {nightOverride === null ? "Auto" : nightOverride ? "Night" : "Day"}
-          </button>
-        </div>
-        <div style={{ position: "relative", marginLeft: "0.5rem", flexShrink: 0 }}>
-          <button
-            type="button"
-            aria-label="Help"
-            title="Help"
-            onClick={() => setShowHelpMenu((open) => !open)}
-            style={{
-              width: "1.75rem",
-              height: "1.75rem",
-              borderRadius: "50%",
-              background: "none",
-              border: "1px solid #2461e5",
-              color: "#2461e5",
-            }}
-          >
-            ?
-          </button>
-          {showHelpMenu && (
-            <div
-              role="menu"
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", marginRight: "0.75rem" }}>
+            <span style={{ fontSize: "0.7rem", color: "#666", marginBottom: "0.15rem" }}>Map style</span>
+            {/* Cycles Auto (follow the place's own sunrise/sunset) -> Day ->
+                Night -> back to Auto, rather than a single on/off switch, so
+                a viewer can both force a style and return to the automatic
+                one. */}
+            <button
+              type="button"
+              title={
+                nightOverride === null
+                  ? "Map style: Auto (click for Day)"
+                  : nightOverride
+                    ? "Map style: Night (click for Auto)"
+                    : "Map style: Day (click for Night)"
+              }
+              onClick={() => setNightOverride((current) => (current === null ? false : current ? null : true))}
+              style={{ padding: "0.25rem 0.6rem", fontSize: "0.85rem" }}
+            >
+              {nightOverride === null ? "Auto" : nightOverride ? "Night" : "Day"}
+            </button>
+          </div>
+          <div style={{ position: "relative", flexShrink: 0 }}>
+            <button
+              type="button"
+              aria-label="Help"
+              title="Help"
+              onClick={() => setShowHelpMenu((open) => !open)}
               style={{
-                position: "absolute",
-                right: 0,
-                top: "2rem",
-                background: "white",
-                border: "1px solid #ccc",
-                borderRadius: "6px",
-                boxShadow: "0 2px 10px rgba(0,0,0,0.15)",
-                whiteSpace: "nowrap",
-                zIndex: 1500,
+                width: "1.75rem",
+                height: "1.75rem",
+                borderRadius: "50%",
+                background: "none",
+                border: "1px solid #2461e5",
+                color: "#2461e5",
               }}
             >
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setShowHelpMenu(false);
-                  setShowExplainer(true);
+              ?
+            </button>
+            {showHelpMenu && (
+              <div
+                role="menu"
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: "2rem",
+                  background: "white",
+                  border: "1px solid #ccc",
+                  borderRadius: "6px",
+                  boxShadow: "0 2px 10px rgba(0,0,0,0.15)",
+                  whiteSpace: "nowrap",
+                  zIndex: 1500,
                 }}
-                style={{ display: "block", width: "100%", padding: "0.5rem 0.75rem", textAlign: "left" }}
               >
-                About community reports
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setShowHelpMenu(false);
-                  onShowTour?.();
-                }}
-                style={{ display: "block", width: "100%", padding: "0.5rem 0.75rem", textAlign: "left" }}
-              >
-                How this app works
-              </button>
-            </div>
-          )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setShowHelpMenu(false);
+                    setShowExplainer(true);
+                  }}
+                  style={{ display: "block", width: "100%", padding: "0.5rem 0.75rem", textAlign: "left" }}
+                >
+                  About community reports
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setShowHelpMenu(false);
+                    onShowTour?.();
+                  }}
+                  style={{ display: "block", width: "100%", padding: "0.5rem 0.75rem", textAlign: "left" }}
+                >
+                  How this app works
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
       {toggles.temperature && <TemperatureLegend />}
