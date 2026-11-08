@@ -25,6 +25,12 @@ ENV HOSTNAME=0.0.0.0
 
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+# Next's standalone output doesn't include public/ on its own (documented
+# behavior, same class of gotcha as serverExternalPackages below for mqtt) —
+# confirmed live: sw.js and isobars-dark-02.svg both 404'd in production
+# before this line, breaking push notifications (the service worker could
+# never register) and the header's background image.
+COPY --from=builder /app/public ./public
 COPY --from=builder /app/README.md ./README.md
 
 # better-sqlite3's native binding isn't picked up by Next's standalone
