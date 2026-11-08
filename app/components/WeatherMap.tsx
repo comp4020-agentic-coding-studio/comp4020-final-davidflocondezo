@@ -1498,7 +1498,14 @@ export default function WeatherMap({
                     : "Map style: Day (click for Night)"
               }
               onClick={() => setNightOverride((current) => (current === null ? false : current ? null : true))}
-              style={{ padding: "0.25rem 0.6rem", fontSize: "0.85rem" }}
+              style={{
+                padding: "0.25rem 0.6rem",
+                fontSize: "0.85rem",
+                borderRadius: "999px",
+                background: "none",
+                border: "1px solid #2461e5",
+                color: "#2461e5",
+              }}
             >
               {nightOverride === null ? "Auto" : nightOverride ? "Night" : "Day"}
             </button>
