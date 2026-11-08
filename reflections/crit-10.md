@@ -15,15 +15,7 @@ regardless of whose."
 This week was a little different and I think from the past weeks I have realised how reliable the agent is and this week was a huge reveal on how not to over rely on the agent. To explain why i came about this, I actually prompted the agent go straight to "read the brief" and it somehow started editing files too without ever showing me a plan, on the reasoning that the deadline justified moving fast. I had to stop it and say so explicitly. In hindsight the deadline was the reason to confirm the approach *faster*, not skip confirming it. A DB schema change and a new permissions model are exactly the kind of decisions I want to have seen before they're made, not after. That's now a standing rule in this repo's CLAUDE.md, not just something I
 said once.
 
-Second, inside the access-control design itself: I almost shipped a version
-that returned each report's raw `visitor_id` to the browser so the client
-could decide locally whether to show a delete button. It worked in a quick
-test and looked done. Writing it up is what made me stop: I'd be sending an
-httpOnly cookie's value back out over JSON, which means any client could
-read it and replay it as its own `Cookie` header — exactly the thing
-`httpOnly` exists to prevent, defeated by my own API. I replaced it with a
-server-computed `ownedByMe` boolean instead. The lesson wasn't "remember to
-check ownership" — I did check it, correctly, on delete. It's that *what you
-expose*, not just what you enforce, is part of access control, and the place
-I catch that kind of mistake is explaining the design on paper, not glancing
-at a passing test. So I think moving forward I want to be a developer that doesn't overly rely on an Ai agent and someone who puts my ideas first as the starting ground before even asking AI to come up with ideas.
+Second, inside the access-control design itself: I almost shipped a version that returned each report's raw `visitor_id` to the browser so the client could decide locally whether to show a delete button. It worked in a quick
+test and looked done. Writing it up is what made me stop: I'd be sending an httpOnly cookie's value back out over JSON, which means any client could read it and replay it as its own `Cookie` header — exactly the thing
+`httpOnly` exists to prevent, defeated by my own API. I replaced it with a server-computed `ownedByMe` boolean instead. The lesson wasn't "remember to check ownership" — I did check it, correctly, on delete. It's that *what you
+expose*, not just what you enforce, is part of access control, and the place I catch that kind of mistake is explaining the design on paper, not glancing at a passing test. So I think moving forward I want to be a developer that doesn't overly rely on an Ai agent and someone who puts my ideas first as the starting ground before even asking AI to come up with ideas.
