@@ -38,6 +38,7 @@ export default function CurrentConditions({ tempC, iconDescriptor, nearestWarnin
         border: "1px solid #ccc",
         borderRadius: "6px",
         padding: "0.75rem 1rem",
+        marginTop: "1rem",
         marginBottom: "1rem",
       }}
     >
