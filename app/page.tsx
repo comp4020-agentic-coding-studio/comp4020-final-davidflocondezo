@@ -328,6 +328,7 @@ function Home() {
           {
             paddingTop: "32px",
             paddingBottom: "32px",
+            paddingLeft: "1rem",
             backgroundColor: "#0c4ad0",
             backgroundImage: "url(/isobars-dark-02.svg)",
             backgroundRepeat: "no-repeat",
